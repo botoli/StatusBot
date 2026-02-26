@@ -1,0 +1,390 @@
+// index.js
+const TelegramBot = require('node-telegram-bot-api');
+const config = require('./config');
+const system = require('./modules/system');
+const AlertManager = require('./modules/alerts');
+const ServiceManager = require('./modules/services');
+const history = require('./modules/history');
+const os = require('os');
+const { exec } = require('child_process');
+const util = require('util');
+const execPromise = util.promisify(exec);
+
+// Инициализация бота
+const bot = new TelegramBot(config.TELEGRAM_TOKEN, { polling: true });
+
+// Инициализация менеджеров
+const alerts = new AlertManager(bot);
+const services = new ServiceManager(bot);
+
+// ============== MIDDLEWARE ==============
+function adminOnly(handler) {
+    return async (msg, ...args) => {
+        if (msg.chat.id !== config.ADMIN_ID) {
+            return bot.sendMessage(msg.chat.id, '⛔ Нет доступа');
+        }
+        try {
+            return await handler(msg, ...args);
+        } catch (error) {
+            console.error(`❌ Ошибка в команде:`, error);
+            bot.sendMessage(msg.chat.id, '❌ Внутренняя ошибка');
+        }
+    };
+}
+
+// ============== ЗАПУСК ==============
+// Запуск мониторинга
+alerts.startMonitoring();
+
+// Сбор истории сразу при старте
+(async () => {
+    try {
+        const metrics = await system.getAllMetrics();
+        await history.addPoint(metrics);
+        console.log('📊 Первая точка истории добавлена');
+    } catch (error) {
+        console.error('❌ Ошибка при первом сборе истории:', error);
+    }
+})();
+
+// Сбор истории каждые 5 минут
+setInterval(async () => {
+    try {
+        const metrics = await system.getAllMetrics();
+        await history.addPoint(metrics);
+    } catch (error) {
+        console.error('❌ Ошибка сбора истории:', error);
+    }
+}, config.INTERVALS.HISTORY);
+
+// Очистка старых данных (из config)
+setInterval(async () => {
+    try {
+        await history.cleanup();
+        console.log('🧹 История очищена');
+    } catch (error) {
+        console.error('❌ Ошибка очистки истории:', error);
+    }
+}, config.INTERVALS.CLEANUP);
+
+// ============== КОМАНДЫ ==============
+
+// /start
+bot.onText(/\/start/, adminOnly(async (msg) => {
+    const welcome = `🖥 *Мониторинг сервера ${os.hostname()}*\n\n` +
+        `*Основные команды:*\n` +
+        `/status — текущее состояние\n` +
+        `/details — детальные метрики\n` +
+        `/services — управление службами\n` +
+        `/history — статистика за 24ч\n` +
+        `/history48 — статистика за 48ч\n` +
+        `/history7d — статистика за 7 дней\n` +
+        `/health — общий статус системы\n` +
+        `/top — нагрузка процессов\n` +
+        `/uptime — время работы\n` +
+        `/alerts — настроить уведомления\n` +
+        `/help — помощь`;
+
+    bot.sendMessage(msg.chat.id, welcome, { parse_mode: 'Markdown' });
+}));
+
+// /status
+bot.onText(/^\/status$/, adminOnly(async (msg) => {
+    const metrics = await system.getAllMetrics();
+    
+    let message = `🖥 *${os.hostname()}*\n\n`;
+
+    // CPU
+    message += `📊 *Процессор*\n`;
+    message += `${system.getLoadBar(metrics.cpu.current)} ${metrics.cpu.current}%\n`;
+    message += `Load: ${metrics.cpu.load1}, ${metrics.cpu.load5}, ${metrics.cpu.load15}\n\n`;
+
+    // RAM
+    message += `🧠 *Память*\n`;
+    message += `${system.getLoadBar(metrics.memory.percent)} ${metrics.memory.percent}%\n`;
+    message += `${metrics.memory.used}GB / ${metrics.memory.total}GB\n\n`;
+
+    // Диск
+    if (metrics.disk) {
+        message += `💽 *Диск*\n`;
+        message += `${system.getLoadBar(Number(metrics.disk.percent))} ${metrics.disk.percent}%\n`;
+        message += `${metrics.disk.used} / ${metrics.disk.total}\n\n`;
+    }
+
+    // Температуры
+    if (metrics.temperature.cpu) {
+        const emoji = system.getTempEmoji(metrics.temperature.cpu);
+        message += `${emoji} CPU: ${metrics.temperature.cpu.toFixed(1)}°C\n`;
+    }
+    if (metrics.temperature.gpu) {
+        const emoji = system.getTempEmoji(metrics.temperature.gpu);
+        message += `${emoji} GPU: ${metrics.temperature.gpu.toFixed(1)}°C\n`;
+    }
+    if (metrics.temperature.ssd) {
+        const emoji = system.getTempEmoji(metrics.temperature.ssd);
+        message += `${emoji} SSD: ${metrics.temperature.ssd.toFixed(1)}°C\n`;
+    }
+
+    // Вентиляторы
+    if (metrics.fans.length > 0) {
+        message += `\n🌀 Вентиляторы: ${metrics.fans.join(', ')} RPM\n`;
+    }
+
+    message += `\n⏱️ Uptime: ${metrics.uptime}`;
+
+    bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+}));
+
+// /details
+bot.onText(/^\/details$/, adminOnly(async (msg) => {
+    const metrics = await system.getAllMetrics();
+    
+    let message = `📋 *Детальная информация ${os.hostname()}*\n\n`;
+    message += `⏱️ Аптайм: ${metrics.uptime}\n`;
+    if (metrics.voltage) message += `⚡ Напряжение: ${metrics.voltage}\n`;
+    
+    // CPU детально
+    message += `\n📊 *CPU*\n`;
+    message += `  Загрузка: ${metrics.cpu.current}%\n`;
+    message += `  Load 1м: ${metrics.cpu.load1}\n`;
+    message += `  Load 5м: ${metrics.cpu.load5}\n`;
+    message += `  Load 15м: ${metrics.cpu.load15}\n`;
+
+    // RAM детально
+    message += `\n🧠 *RAM*\n`;
+    message += `  Всего: ${metrics.memory.total}GB\n`;
+    message += `  Использовано: ${metrics.memory.used}GB\n`;
+    message += `  Свободно: ${metrics.memory.free}GB\n`;
+    message += `  Загрузка: ${metrics.memory.percent}%\n`;
+
+    // Диск детально
+    if (metrics.disk) {
+        message += `\n💽 *Диск*\n`;
+        message += `  Всего: ${metrics.disk.total}\n`;
+        message += `  Использовано: ${metrics.disk.used}\n`;
+        message += `  Свободно: ${metrics.disk.free}\n`;
+        message += `  Загрузка: ${metrics.disk.percent}%\n`;
+    }
+
+    // Температуры детально
+    message += `\n🌡️ *Температуры*\n`;
+    if (metrics.temperature.cpu) {
+        const emoji = system.getTempEmoji(metrics.temperature.cpu);
+        message += `  ${emoji} CPU: ${metrics.temperature.cpu.toFixed(1)}°C\n`;
+    }
+    if (metrics.temperature.gpu) {
+        const emoji = system.getTempEmoji(metrics.temperature.gpu);
+        message += `  ${emoji} GPU: ${metrics.temperature.gpu.toFixed(1)}°C\n`;
+    }
+    if (metrics.temperature.ssd) {
+        const emoji = system.getTempEmoji(metrics.temperature.ssd);
+        message += `  ${emoji} SSD: ${metrics.temperature.ssd.toFixed(1)}°C\n`;
+    }
+
+    // Вентиляторы
+    if (metrics.fans.length > 0) {
+        message += `\n🌀 *Вентиляторы*\n`;
+        metrics.fans.forEach((speed, i) => {
+            message += `  Fan ${i+1}: ${speed} RPM\n`;
+        });
+    }
+
+    bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+}));
+
+// /services
+bot.onText(/^\/services$/, adminOnly(async (msg) => {
+    let statusText = '📊 *Статус всех служб*\n\n';
+
+    for (const service of config.SERVICES) {
+        const status = await services.getServiceStatus(service.systemName);
+        const emoji = status.status === 'active' ? '✅' : '❌';
+        statusText += `${emoji} ${service.name}: ${status.status}\n`;
+        if (status.memory) {
+            statusText += `   📊 Память: ${status.memory}\n`;
+        }
+    }
+
+    bot.sendMessage(msg.chat.id, statusText, {
+        parse_mode: 'Markdown',
+        reply_markup: services.getMainMenuKeyboard()
+    });
+}));
+
+// /history с валидацией
+bot.onText(/^\/history(\d+)?(d)?$/, adminOnly(async (msg, match) => {
+    let hours = 24;
+
+    if (match && match[1]) {
+        const num = parseInt(match[1]);
+        if (num > 168) { // не больше недели
+            return bot.sendMessage(msg.chat.id, '❌ Максимум 168 часов (7 дней)');
+        }
+        if (match[2] === 'd') {
+            hours = num * 24;
+        } else {
+            hours = num;
+        }
+    }
+
+    const [cpuStats, memStats, diskStats, tempStats] = await Promise.all([
+        history.getStats('cpu', hours),
+        history.getStats('memory', hours),
+        history.getStats('disk', hours),
+        history.getStats('temperature', hours)
+    ]);
+
+    let message = `📊 *Статистика за ${hours}ч*\n\n`;
+    message += history.formatHistoryStats('cpu', cpuStats) + '\n\n';
+    message += history.formatHistoryStats('memory', memStats) + '\n\n';
+
+    if (diskStats) {
+        message += history.formatHistoryStats('disk', diskStats) + '\n\n';
+    }
+
+    if (tempStats) {
+        const tempEmoji = system.getTempEmoji(parseFloat(tempStats.max));
+        message += `${tempEmoji} *Температура* за ${hours}ч:\n`;
+        message += `📈 Макс: ${tempStats.max}°C\n`;
+        message += `📉 Мин: ${tempStats.min}°C\n`;
+        message += `📊 Среднее: ${tempStats.avg}°C\n`;
+    }
+
+    bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+}));
+
+// /uptime
+bot.onText(/^\/uptime$/, adminOnly(async (msg) => {
+    const metrics = await system.getAllMetrics();
+    bot.sendMessage(msg.chat.id, `⏱️ *Аптайм:* ${metrics.uptime}`, { parse_mode: 'Markdown' });
+}));
+
+// /top
+bot.onText(/^\/top$/, adminOnly(async (msg) => {
+    try {
+        const { stdout } = await execPromise('top -bn1 | head -20');
+        bot.sendMessage(msg.chat.id, '📋 *Топ процессов*\n```\n' + stdout + '\n```', { parse_mode: 'Markdown' });
+    } catch (error) {
+        bot.sendMessage(msg.chat.id, '❌ Ошибка получения top');
+    }
+}));
+
+// /health
+bot.onText(/^\/health$/, adminOnly(async (msg) => {
+    const metrics = await system.getAllMetrics();
+    let status = '✅ *HEALTH CHECK*\n\n';
+    
+    // CPU
+    const cpuVal = parseFloat(metrics.cpu.current);
+    status += cpuVal > config.THRESHOLDS.CPU ? '🔴' : '🟢';
+    status += ` CPU: ${cpuVal}%\n`;
+    
+    // RAM
+    const ramVal = parseFloat(metrics.memory.percent);
+    status += ramVal > config.THRESHOLDS.RAM ? '🔴' : '🟢';
+    status += ` RAM: ${ramVal}%\n`;
+    
+    // Disk
+    if (metrics.disk) {
+        const diskVal = parseInt(metrics.disk.percent);
+        status += diskVal > config.THRESHOLDS.DISK ? '🔴' : '🟢';
+        status += ` Disk: ${diskVal}%\n`;
+    }
+    
+    // Temp
+    if (metrics.temperature.cpu) {
+        const tempVal = metrics.temperature.cpu;
+        status += tempVal > config.THRESHOLDS.TEMP_CPU ? '🔴' : '🟢';
+        status += ` Temp: ${tempVal.toFixed(1)}°C\n`;
+    }
+    
+    // Services
+    let servicesDown = 0;
+    for (const service of config.SERVICES) {
+        const s = await services.getServiceStatus(service.systemName);
+        if (s.status !== 'active') servicesDown++;
+    }
+    status += servicesDown > 0 ? '🔴' : '🟢';
+    status += ` Services: ${servicesDown} down\n`;
+    
+    bot.sendMessage(msg.chat.id, status, { parse_mode: 'Markdown' });
+}));
+
+// /restart service
+bot.onText(/^\/restart (\w+)$/, adminOnly(async (msg, match) => {
+    const serviceName = match[1];
+    const service = config.SERVICES.find(s => s.systemName === serviceName);
+    
+    if (!service) {
+        return bot.sendMessage(msg.chat.id, '❌ Служба не найдена');
+    }
+    
+    const result = await services.controlService(serviceName, 'restart');
+    if (result.success) {
+        bot.sendMessage(msg.chat.id, `🔄 *${service.name}* перезапущен`, { parse_mode: 'Markdown' });
+    } else {
+        bot.sendMessage(msg.chat.id, `❌ Ошибка: ${result.message}`);
+    }
+}));
+
+// /alerts
+bot.onText(/^\/alerts$/, adminOnly(async (msg) => {
+    const message = `🔔 *Настройки уведомлений*\n\n` +
+        `*Текущие пороги:*\n` +
+        `⚡ CPU: ${config.THRESHOLDS.CPU}%\n` +
+        `🧠 RAM: ${config.THRESHOLDS.RAM}%\n` +
+        `💽 Диск: ${config.THRESHOLDS.DISK}%\n` +
+        `🔥 Температура CPU: ${config.THRESHOLDS.TEMP_CPU}°C\n` +
+        `🔥 Температура GPU: ${config.THRESHOLDS.TEMP_GPU}°C\n` +
+        `🔥 Температура SSD: ${config.THRESHOLDS.TEMP_SSD}°C\n\n` +
+        `⏱️ Проверка каждую минуту\n` +
+        `🔕 Повторное уведомление через ${config.INTERVALS.ALERT_COOLDOWN/60000} минут`;
+
+    bot.sendMessage(msg.chat.id, message, { parse_mode: 'Markdown' });
+}));
+
+// /help
+bot.onText(/^\/help$/, adminOnly(async (msg) => {
+    const help = `🆘 *Помощь по командам*\n\n` +
+        `*Мониторинг:*\n` +
+        `/status — текущее состояние\n` +
+        `/details — детальные метрики\n` +
+        `/history — статистика за 24ч\n` +
+        `/history48 — за 48ч\n` +
+        `/history7d — за 7 дней\n` +
+        `/health — общий статус\n` +
+        `/top — нагрузка процессов\n` +
+        `/uptime — время работы\n\n` +
+        `*Управление:*\n` +
+        `/services — меню служб\n` +
+        `/restart имя — перезапустить службу\n\n` +
+        `*Настройки:*\n` +
+        `/alerts — текущие пороги\n\n` +
+        `*Системные:*\n` +
+        `/ping — проверка связи\n` +
+        `/start — приветствие`;
+
+    bot.sendMessage(msg.chat.id, help, { parse_mode: 'Markdown' });
+}));
+
+// /ping
+bot.onText(/^\/ping$/, adminOnly(async (msg) => {
+    bot.sendMessage(msg.chat.id, '🏓 Pong!');
+}));
+
+// Обработка callback-запросов
+bot.on('callback_query', async (query) => {
+    if (query.message.chat.id !== config.ADMIN_ID) {
+        return bot.answerCallbackQuery(query.id, { text: '⛔ Нет доступа' });
+    }
+    await services.handleCallback(query);
+});
+
+// ============== ЛОГИ ЗАПУСКА ==============
+console.log(`🖥 Host: ${os.hostname()}`);
+console.log(`✅ Бот запущен с полным функционалом`);
+console.log(`📊 Мониторинг: CPU, RAM, Disk, Temperature`);
+console.log(`🔄 Управление службами: Да`);
+console.log(`📈 История: Да (сохраняется в data/history.json)`);
+console.log(`👤 Admin ID: ${config.ADMIN_ID}`);
+console.log(`⏱️ Интервалы: CHECK=${config.INTERVALS.CHECK/1000}s, HISTORY=${config.INTERVALS.HISTORY/60000}min`);

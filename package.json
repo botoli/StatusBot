@@ -1,0 +1,14 @@
+{
+  "name": "service-monitor-bot",
+  "version": "1.0.0",
+  "description": "Telegram bot for monitoring system services",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "pm2": "pm2 start bot.js --name service-monitor"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.61.0",
+    "systeminformation": "^5.21.0"
+  }
+}
