@@ -5,7 +5,6 @@ const system = require('./modules/system');
 const AlertManager = require('./modules/alerts');
 const ServiceManager = require('./modules/services');
 const history = require('./modules/history');
-const charts = require('./modules/charts');
 const os = require('os');
 const { exec } = require('child_process');
 const util = require('util');
@@ -68,6 +67,7 @@ function getMainKeyboard() {
         ['📊 СТАТУС', '🌐 СЕТЬ'],
         ['🧰 СЛУЖБЫ', '📈 ИСТОРИЯ'],
         ['🔔 АЛЕРТЫ', '⚙️ СИСТЕМА'],
+        ['🌐 Измерить интернет', '📊 Система'],
         ['🖥 СЕРВЕРЫ', '◀️ НАЗАД']
     ]);
 }
@@ -84,7 +84,7 @@ function getStatusKeyboard() {
 function getNetworkKeyboard() {
     return createKeyboard([
         ['📊 Все интерфейсы', '🔍 Выбрать'],
-        ['📈 График', '⚡ Скорость'],
+        ['⚡ Скорость'],
         ['◀️ НАЗАД']
     ]);
 }
@@ -250,48 +250,17 @@ async function handleStatus(ctx) {
     await sendWithKeyboard(bot, ctx.chatId, text, getStatusKeyboard());
 }
 
-// LIVE режим с графиком
+// LIVE режим без графика
 const liveIntervals = {}; // Хранилище активных интервалов
 
 async function handleLiveStatus(ctx) {
-    const metricsHistory = [];
     let count = 0;
-    const maxPoints = 20; // Максимум точек на графике
     
     const liveMsg = await ctx.bot.sendMessage(ctx.chatId, "🔴 *LIVE режим*\nОбновление каждые 5 секунд", { parse_mode: 'Markdown' });
     
     const interval = setInterval(async () => {
         try {
             const metrics = await system.getAllMetrics();
-            
-            // Добавляем точку в историю
-            metricsHistory.push({
-                cpu: parseFloat(metrics.cpu.current),
-                ram: parseFloat(metrics.memory.percent),
-                timestamp: Date.now()
-            });
-            
-            // Ограничиваем размер истории
-            if (metricsHistory.length > maxPoints) {
-                metricsHistory.shift();
-            }
-            
-            // Создаем график если есть хотя бы 2 точки
-            if (metricsHistory.length >= 2) {
-                const chartUrl = charts.getChartUrl('live', {
-                    cpu: metricsHistory.map(m => m.cpu),
-                    ram: metricsHistory.map(m => m.ram),
-                    labels: null
-                });
-                
-                try {
-                    await ctx.bot.sendPhoto(ctx.chatId, chartUrl, {
-                        caption: `📈 *LIVE график CPU/RAM*\n\n⚡ CPU: ${metrics.cpu.current}%\n🧠 RAM: ${metrics.memory.percent}%`
-                    });
-                } catch (error) {
-                    console.error('Ошибка отправки графика:', error);
-                }
-            }
             
             // Используем красивое отображение
             let text = `🔴 *LIVE СТАТУС* (обновление 5с)\n`;
@@ -347,7 +316,9 @@ async function handleLiveStatus(ctx) {
     }, 5000);
     
     liveIntervals[ctx.chatId] = interval;
-    await ctx.bot.answerCallbackQuery(ctx.query.id);
+    if (ctx.query) {
+        await ctx.bot.answerCallbackQuery(ctx.query.id);
+    }
 }
 
 
@@ -497,7 +468,7 @@ async function handleHistory(ctx) {
     await sendWithKeyboard(bot, ctx.chatId, text, getHistoryKeyboard());
 }
 
-// Показать статистику с графиком
+// Показать статистику с красивым форматированием
 async function handleHistPeriod(ctx, hours) {
     if (ctx.query) {
         await ctx.bot.answerCallbackQuery(ctx.query.id, { text: `⏳ Загружаю статистику за ${hours}ч...` });
@@ -515,45 +486,69 @@ async function handleHistPeriod(ctx, hours) {
         history.getStats('temperature', hours)
     ]);
     
-    // Создаем график
-    if (cpuHistory.length >= 2 && memHistory.length >= 2) {
-        const cpuData = cpuHistory.map(h => h.value);
-        const ramData = memHistory.map(h => h.value);
-        const diskData = diskHistory.length > 0 ? diskHistory.map(h => h.value) : null;
+    // Красивое форматирование истории
+    let text = `📈 *ИСТОРИЯ ЗА ${hours}Ч*\n`;
+    text += '═'.repeat(30) + '\n\n';
+    
+    // CPU
+    if (cpuStats && cpuHistory.length > 0) {
+        const avgCpu = parseFloat(cpuStats.avg);
+        const maxCpu = parseFloat(cpuStats.max);
+        const minCpu = parseFloat(cpuStats.min);
         
-        const chartUrl = charts.getChartUrl('history', {
-            cpu: cpuData,
-            ram: ramData,
-            disk: diskData,
-            labels: null
-        });
-        
-        try {
-            let caption = `📈 *История за ${hours}ч*\n\n`;
-            if (cpuStats) caption += `📊 CPU: min ${cpuStats.min}%, max ${cpuStats.max}%, avg ${cpuStats.avg}%\n`;
-            if (memStats) caption += `🧠 RAM: min ${memStats.min}%, max ${memStats.max}%, avg ${memStats.avg}%\n`;
-            if (diskStats) caption += `💽 DISK: min ${diskStats.min}%, max ${diskStats.max}%, avg ${diskStats.avg}%\n`;
-            if (tempStats) {
-                const emoji = system.getTempEmoji(parseFloat(tempStats.max));
-                caption += `${emoji} TEMP: min ${tempStats.min}°C, max ${tempStats.max}°C, avg ${tempStats.avg}°C\n`;
-            }
-            
-            await bot.sendPhoto(ctx.chatId, chartUrl, {
-                caption: caption,
-                parse_mode: 'Markdown'
-            });
-        } catch (error) {
-            console.error('Ошибка отправки графика истории:', error);
-        }
+        text += `⚡ *CPU*\n`;
+        text += system.getLoadBar(avgCpu, 20) + '\n';
+        text += `   📊 Среднее: *${avgCpu}%*\n`;
+        text += `   📈 Максимум: *${maxCpu}%*\n`;
+        text += `   📉 Минимум: *${minCpu}%*\n`;
+        text += `   📐 Точек данных: ${cpuStats.points}\n\n`;
     }
     
-    let text = `📈 *Статистика за ${hours}ч*\n\n`;
-    if (cpuStats) text += `📊 CPU: min ${cpuStats.min}%, max ${cpuStats.max}%, avg ${cpuStats.avg}%\n`;
-    if (memStats) text += `🧠 RAM: min ${memStats.min}%, max ${memStats.max}%, avg ${memStats.avg}%\n`;
-    if (diskStats) text += `💽 DISK: min ${diskStats.min}%, max ${diskStats.max}%, avg ${diskStats.avg}%\n`;
+    // RAM
+    if (memStats && memHistory.length > 0) {
+        const avgRam = parseFloat(memStats.avg);
+        const maxRam = parseFloat(memStats.max);
+        const minRam = parseFloat(memStats.min);
+        
+        text += `🧠 *RAM*\n`;
+        text += system.getLoadBar(avgRam, 20) + '\n';
+        text += `   📊 Среднее: *${avgRam}%*\n`;
+        text += `   📈 Максимум: *${maxRam}%*\n`;
+        text += `   📉 Минимум: *${minRam}%*\n`;
+        text += `   📐 Точек данных: ${memStats.points}\n\n`;
+    }
+    
+    // DISK
+    if (diskStats && diskHistory.length > 0) {
+        const avgDisk = parseFloat(diskStats.avg);
+        const maxDisk = parseFloat(diskStats.max);
+        const minDisk = parseFloat(diskStats.min);
+        
+        text += `💽 *DISK*\n`;
+        text += system.getLoadBar(avgDisk, 20) + '\n';
+        text += `   📊 Среднее: *${avgDisk}%*\n`;
+        text += `   📈 Максимум: *${maxDisk}%*\n`;
+        text += `   📉 Минимум: *${minDisk}%*\n`;
+        text += `   📐 Точек данных: ${diskStats.points}\n\n`;
+    }
+    
+    // TEMPERATURE
     if (tempStats) {
-        const emoji = system.getTempEmoji(parseFloat(tempStats.max));
-        text += `${emoji} TEMP: min ${tempStats.min}°C, max ${tempStats.max}°C, avg ${tempStats.avg}°C\n`;
+        const avgTemp = parseFloat(tempStats.avg);
+        const maxTemp = parseFloat(tempStats.max);
+        const minTemp = parseFloat(tempStats.min);
+        const emoji = system.getTempEmoji(maxTemp);
+        
+        text += `${emoji} *TEMPERATURE*\n`;
+        text += `   📊 Среднее: *${avgTemp}°C*\n`;
+        text += `   📈 Максимум: *${maxTemp}°C*\n`;
+        text += `   📉 Минимум: *${minTemp}°C*\n`;
+        text += `   📐 Точек данных: ${tempStats.points}\n\n`;
+    }
+    
+    if (!cpuStats && !memStats && !diskStats && !tempStats) {
+        text += `⚠️ *Нет данных за последние ${hours}ч*\n`;
+        text += `Попробуйте выбрать другой период.`;
     }
     
     await sendWithKeyboard(bot, ctx.chatId, text, getHistoryKeyboard());
@@ -711,7 +706,7 @@ async function handleNetworkInterface(ctx, interfaceName) {
     
     // Создаем специальную клавиатуру для интерфейса
     const interfaceKeyboard = createKeyboard([
-        ['⚡ Скорость', '📈 График'],
+        ['⚡ Скорость'],
         ['🔄 Обновить', '◀️ НАЗАД']
     ]);
     
@@ -762,83 +757,7 @@ async function handleNetworkSpeed(ctx, interfaceName = null) {
     await sendWithKeyboard(bot, ctx.chatId, text, getNetworkKeyboard());
 }
 
-// График сетевой активности
-async function handleNetworkChart(ctx, interfaceName = null) {
-    await ctx.bot.answerCallbackQuery(ctx.query.id, { text: '📈 Генерирую график...' });
-    
-    if (!interfaceName) {
-        interfaceName = await system.getMainInterface();
-    }
-    
-    if (!interfaceName) {
-        await ctx.bot.sendMessage(ctx.chatId, '❌ Не удалось определить интерфейс');
-        return;
-    }
-    
-    try {
-        // Получаем историю сети за последний час
-        const networkHistory = await history.getHistory('network', 1);
-        
-        // Фильтруем по интерфейсу
-        const ifaceHistory = networkHistory.filter(h => h.interface === interfaceName);
-        
-        if (ifaceHistory.length < 2) {
-            await ctx.bot.sendMessage(ctx.chatId, `⚠️ Недостаточно данных для графика (нужно минимум 2 точки)`);
-            return;
-        }
-        
-        // Подготавливаем данные для графика
-        const rxData = ifaceHistory.map(h => (h.rxSpeed || 0) / 1024 / 1024); // MB/s
-        const txData = ifaceHistory.map(h => (h.txSpeed || 0) / 1024 / 1024); // MB/s
-        
-        const chartConfig = {
-            type: 'line',
-            data: {
-                labels: Array(rxData.length).fill(''),
-                datasets: [
-                    {
-                        label: 'RX (MB/s)',
-                        data: rxData,
-                        borderColor: 'rgb(54, 162, 235)',
-                        backgroundColor: 'rgba(54, 162, 235, 0.1)',
-                        tension: 0.4,
-                        fill: true
-                    },
-                    {
-                        label: 'TX (MB/s)',
-                        data: txData,
-                        borderColor: 'rgb(255, 99, 132)',
-                        backgroundColor: 'rgba(255, 99, 132, 0.1)',
-                        tension: 0.4,
-                        fill: true
-                    }
-                ]
-            },
-            options: {
-                animation: false,
-                responsive: true,
-                plugins: {
-                    legend: { display: true, position: 'top' },
-                    title: { display: true, text: `Сетевая активность: ${interfaceName}` }
-                },
-                scales: {
-                    y: { beginAtZero: true }
-                }
-            }
-        };
-        
-        const encoded = encodeURIComponent(JSON.stringify(chartConfig));
-        const chartUrl = `https://quickchart.io/chart?c=${encoded}`;
-        
-        await ctx.bot.sendPhoto(ctx.chatId, chartUrl, {
-            caption: `📈 *График сетевой активности: ${interfaceName}*\n\n⬇️ Синий - входящий трафик\n⬆️ Красный - исходящий трафик`
-        });
-        
-    } catch (error) {
-        console.error('Ошибка создания графика сети:', error);
-        await ctx.bot.sendMessage(ctx.chatId, '❌ Ошибка создания графика');
-    }
-}
+// График сетевой активности - удалено (графики убраны)
 
 // Система
 async function handleSystem(ctx) {
@@ -969,7 +888,6 @@ const routeHandlers = {
     'network_all': handleNetworkAll,
     'network_interfaces': handleNetworkInterfaces,
     'network_speed': handleNetworkSpeed,
-    'network_chart': handleNetworkChart,
     
     // Система
     'system_details': handleSystemDetails,
@@ -1156,6 +1074,22 @@ bot.on('message', async (msg) => {
         
         if (text === '⚡ Скорость') {
             await handleNetworkSpeed(ctx);
+            return;
+        }
+        
+        // Быстрые кнопки
+        if (text === '🌐 Измерить интернет' || text === '🌐 Измерить Интернет') {
+            await handleNetworkSpeed(ctx);
+            return;
+        }
+        
+        if (text === '📊 Система' || text === '📊 Система-данные') {
+            await handleSystemDetails(ctx);
+            return;
+        }
+        
+        if (text === '🧰 Службы' || text === '🧰 СЛУЖБЫ') {
+            await handleServices(ctx);
             return;
         }
         
@@ -1388,12 +1322,6 @@ bot.on('callback_query', async (query) => {
             return;
         }
         
-        // График сети для конкретного интерфейса
-        if (data.startsWith('network_chart_')) {
-            const interfaceName = data.replace('network_chart_', '');
-            await handleNetworkChart(ctx, interfaceName);
-            return;
-        }
         
         // Выбор сервера
         if (data.startsWith('server_select_')) {
