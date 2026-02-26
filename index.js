@@ -1102,6 +1102,27 @@ bot.on('message', async (msg) => {
             return;
         }
         
+        // Обработка нажатий на службы (кнопки клавиатуры)
+        if (text === '🔄 Обновить все') {
+            await handleServices(ctx);
+            return;
+        }
+        
+        // Проверяем, является ли текст названием службы
+        // Кнопка имеет формат: "🟢 📁 File Browser" или "⚫ 🐳 Docker"
+        // Проверяем по названию службы (без эмодзи статуса)
+        const service = config.SERVICES.find(s => {
+            // Убираем эмодзи статуса (🟢, 🟡, 🔴, ⚫) из начала текста
+            const textWithoutStatusEmoji = text.replace(/^[🟢🟡🔴⚫⚪]\s*/, '');
+            // Сравниваем с названием службы
+            return textWithoutStatusEmoji === s.name || text.includes(s.name);
+        });
+        
+        if (service) {
+            await handleService(ctx, service.systemName);
+            return;
+        }
+        
         // Алерты
         if (text.startsWith('⚡ CPU +5')) {
             config.THRESHOLDS.CPU = Math.min(100, config.THRESHOLDS.CPU + 5);

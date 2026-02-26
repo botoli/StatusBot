@@ -12,15 +12,22 @@ class SystemMonitor {
             // Пробуем прочитать /etc/os-release
             const osRelease = await fs.readFile('/etc/os-release', 'utf8');
             const lines = osRelease.split('\n');
+            
+            // Сначала ищем PRETTY_NAME - он содержит полное название
+            for (const line of lines) {
+                if (line.startsWith('PRETTY_NAME=')) {
+                    const prettyName = line.split('=')[1].replace(/"/g, '').trim();
+                    if (prettyName) return prettyName;
+                }
+            }
+            
+            // Если PRETTY_NAME нет, собираем из NAME и VERSION
             let name = 'Linux';
             let version = '';
             
             for (const line of lines) {
-                if (line.startsWith('PRETTY_NAME=')) {
+                if (line.startsWith('NAME=')) {
                     name = line.split('=')[1].replace(/"/g, '').trim();
-                } else if (line.startsWith('NAME=') && !name.includes('Linux')) {
-                    const distroName = line.split('=')[1].replace(/"/g, '').trim();
-                    if (distroName) name = distroName;
                 } else if (line.startsWith('VERSION=')) {
                     version = line.split('=')[1].replace(/"/g, '').trim();
                 }
