@@ -97,21 +97,34 @@ class HistoryManager {
             });
         }
 
-        // Temperature
-        if (metrics.temperature.cpu) {
-            history.temperature.push({
-                timestamp,
-                value: metrics.temperature.cpu,
-                type: 'cpu'
-            });
-        }
-        
-        if (metrics.temperature.gpu) {
-            history.temperature.push({
-                timestamp,
-                value: metrics.temperature.gpu,
-                type: 'gpu'
-            });
+        // Temperature - сохраняем всегда, если есть объект temperature
+        if (metrics.temperature) {
+            // CPU температура
+            if (metrics.temperature.cpu !== null && metrics.temperature.cpu !== undefined) {
+                history.temperature.push({
+                    timestamp,
+                    value: metrics.temperature.cpu,
+                    type: 'cpu'
+                });
+            }
+            
+            // GPU температура
+            if (metrics.temperature.gpu !== null && metrics.temperature.gpu !== undefined) {
+                history.temperature.push({
+                    timestamp,
+                    value: metrics.temperature.gpu,
+                    type: 'gpu'
+                });
+            }
+            
+            // SSD температура
+            if (metrics.temperature.ssd !== null && metrics.temperature.ssd !== undefined) {
+                history.temperature.push({
+                    timestamp,
+                    value: metrics.temperature.ssd,
+                    type: 'ssd'
+                });
+            }
         }
 
         // Network
@@ -156,7 +169,22 @@ class HistoryManager {
             return null;
         }
 
-        const values = data.map(d => d.value);
+        // Для температуры фильтруем по типу 'cpu' (основной тип)
+        let filteredData = data;
+        if (type === 'temperature') {
+            // Берем только CPU температуру для статистики
+            filteredData = data.filter(d => d.type === 'cpu');
+            if (filteredData.length === 0) {
+                // Если нет CPU, берем любую доступную температуру
+                filteredData = data;
+            }
+        }
+
+        const values = filteredData.map(d => d.value);
+        if (values.length === 0) {
+            return null;
+        }
+
         const min = Math.min(...values);
         const max = Math.max(...values);
         const avg = values.reduce((a, b) => a + b, 0) / values.length;
@@ -165,7 +193,7 @@ class HistoryManager {
             min: min.toFixed(1),
             max: max.toFixed(1),
             avg: avg.toFixed(1),
-            points: data.length,
+            points: filteredData.length,
             period: hours
         };
     }

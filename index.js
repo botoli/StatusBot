@@ -1001,6 +1001,10 @@ setInterval(async () => {
     try {
         const metrics = await system.getAllMetrics();
         await history.addPoint(metrics);
+        // Логируем для отладки температуры
+        if (metrics.temperature && metrics.temperature.cpu) {
+            console.log(`🌡️ Температура сохранена: ${metrics.temperature.cpu}°C`);
+        }
     } catch (error) {
         console.error('❌ Ошибка сбора истории:', error);
     }
