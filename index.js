@@ -768,6 +768,7 @@ async function handleSystem(ctx) {
 // Детали системы
 async function handleSystemDetails(ctx) {
     const metrics = await system.getAllMetrics();
+    const distro = await system.getLinuxDistro();
     
     let text = `📋 *ДЕТАЛЬНАЯ ИНФОРМАЦИЯ*\n`;
     text += '═'.repeat(30) + '\n\n';
@@ -775,8 +776,10 @@ async function handleSystemDetails(ctx) {
     // Системная информация
     text += `🖥 *Система*\n`;
     text += `   Hostname: ${os.hostname()}\n`;
+    text += `   OS: ${distro}\n`;
     text += `   Platform: ${os.platform()}\n`;
     text += `   Arch: ${os.arch()}\n`;
+    text += `   Kernel: ${os.release()}\n`;
     text += `   ⏱️ Uptime: ${metrics.uptime}\n`;
     if (metrics.voltage) {
         text += `   ⚡ Voltage: ${metrics.voltage}\n`;
@@ -920,8 +923,14 @@ setInterval(async () => {
         const metrics = await system.getAllMetrics();
         await history.addPoint(metrics);
         // Логируем для отладки температуры
-        if (metrics.temperature && metrics.temperature.cpu) {
-            console.log(`🌡️ Температура сохранена: ${metrics.temperature.cpu}°C`);
+        if (metrics.temperature) {
+            if (metrics.temperature.cpu) {
+                console.log(`🌡️ Температура CPU: ${metrics.temperature.cpu}°C - сохранена в историю`);
+            } else {
+                console.log(`⚠️ Температура CPU не получена (значение: ${metrics.temperature.cpu})`);
+            }
+        } else {
+            console.log(`⚠️ Объект temperature отсутствует в метриках`);
         }
     } catch (error) {
         console.error('❌ Ошибка сбора истории:', error);

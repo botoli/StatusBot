@@ -99,29 +99,32 @@ class HistoryManager {
 
         // Temperature - сохраняем всегда, если есть объект temperature
         if (metrics.temperature) {
-            // CPU температура
-            if (metrics.temperature.cpu !== null && metrics.temperature.cpu !== undefined) {
+            // CPU температура - сохраняем если это валидное число
+            const cpuTemp = metrics.temperature.cpu;
+            if (cpuTemp !== null && cpuTemp !== undefined && !isNaN(cpuTemp) && isFinite(cpuTemp) && cpuTemp > 0) {
                 history.temperature.push({
                     timestamp,
-                    value: metrics.temperature.cpu,
+                    value: parseFloat(cpuTemp),
                     type: 'cpu'
                 });
             }
             
             // GPU температура
-            if (metrics.temperature.gpu !== null && metrics.temperature.gpu !== undefined) {
+            const gpuTemp = metrics.temperature.gpu;
+            if (gpuTemp !== null && gpuTemp !== undefined && !isNaN(gpuTemp) && isFinite(gpuTemp) && gpuTemp > 0) {
                 history.temperature.push({
                     timestamp,
-                    value: metrics.temperature.gpu,
+                    value: parseFloat(gpuTemp),
                     type: 'gpu'
                 });
             }
             
             // SSD температура
-            if (metrics.temperature.ssd !== null && metrics.temperature.ssd !== undefined) {
+            const ssdTemp = metrics.temperature.ssd;
+            if (ssdTemp !== null && ssdTemp !== undefined && !isNaN(ssdTemp) && isFinite(ssdTemp) && ssdTemp > 0) {
                 history.temperature.push({
                     timestamp,
-                    value: metrics.temperature.ssd,
+                    value: parseFloat(ssdTemp),
                     type: 'ssd'
                 });
             }

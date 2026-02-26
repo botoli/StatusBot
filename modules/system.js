@@ -6,6 +6,43 @@ const execPromise = util.promisify(exec);
 const fs = require('fs').promises;
 
 class SystemMonitor {
+    // Получить информацию о дистрибутиве Linux
+    async getLinuxDistro() {
+        try {
+            // Пробуем прочитать /etc/os-release
+            const osRelease = await fs.readFile('/etc/os-release', 'utf8');
+            const lines = osRelease.split('\n');
+            let name = 'Linux';
+            let version = '';
+            
+            for (const line of lines) {
+                if (line.startsWith('PRETTY_NAME=')) {
+                    name = line.split('=')[1].replace(/"/g, '').trim();
+                } else if (line.startsWith('NAME=') && !name.includes('Linux')) {
+                    const distroName = line.split('=')[1].replace(/"/g, '').trim();
+                    if (distroName) name = distroName;
+                } else if (line.startsWith('VERSION=')) {
+                    version = line.split('=')[1].replace(/"/g, '').trim();
+                }
+            }
+            
+            if (version && !name.includes(version)) {
+                return `${name} ${version}`;
+            }
+            return name;
+        } catch (error) {
+            // Fallback на lsb_release
+            try {
+                const { stdout } = await execPromise('lsb_release -d 2>/dev/null');
+                const match = stdout.match(/Description:\s*(.+)/);
+                if (match) return match[1].trim();
+            } catch {}
+            
+            // Если ничего не получилось, возвращаем просто Linux
+            return 'Linux';
+        }
+    }
+    
     // Температура CPU (из нескольких источников)
     async getCPUTemperature() {
         const sources = [
@@ -18,14 +55,15 @@ class SystemMonitor {
             try {
                 const data = await fs.readFile(source, 'utf8');
                 const temp = parseInt(data) / 1000;
-                if (temp > 0 && temp < 120) return temp;
+                // Принимаем температуру от 0 до 150 (расширенный диапазон для стресс-тестов)
+                if (temp > 0 && temp < 150) return temp;
             } catch {}
         }
         
         try {
             const { stdout } = await execPromise('sensors -u 2>/dev/null | grep -E "temp.*input" | head -1 | awk \'{print $2}\'');
             const temp = parseFloat(stdout);
-            if (!isNaN(temp)) return temp;
+            if (!isNaN(temp) && temp > 0 && temp < 150) return temp;
         } catch {}
         
         return null;
