@@ -1,0 +1,8 @@
+[
+  {
+    "name": "prod-1",
+    "host": "localhost",
+    "token": "",
+    "isLocal": true
+  }
+]

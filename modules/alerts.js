@@ -7,6 +7,14 @@ class AlertManager {
         this.bot = bot;
         this.lastAlertTime = {};
         this.serverWasUp = true; // для отслеживания падения
+        // Состояние включенных алертов (по умолчанию все включены)
+        this.enabled = {
+            cpu: true,
+            ram: true,
+            disk: true,
+            temp: true,
+            network: true
+        };
         this.startHeartbeat();
     }
 
@@ -16,30 +24,34 @@ class AlertManager {
         const alerts = [];
         const now = Date.now();
 
-        // Проверка CPU
-        const cpuPercent = parseFloat(metrics.cpu.current);
-        if (cpuPercent > config.THRESHOLDS.CPU) {
-            alerts.push({
-                type: 'CPU',
-                value: `${cpuPercent}%`,
-                threshold: config.THRESHOLDS.CPU,
-                emoji: '⚡'
-            });
+        // Проверка CPU (только если включен)
+        if (this.enabled.cpu) {
+            const cpuPercent = parseFloat(metrics.cpu.current);
+            if (cpuPercent > config.THRESHOLDS.CPU) {
+                alerts.push({
+                    type: 'CPU',
+                    value: `${cpuPercent}%`,
+                    threshold: config.THRESHOLDS.CPU,
+                    emoji: '⚡'
+                });
+            }
         }
 
-        // Проверка RAM
-        const ramPercent = parseFloat(metrics.memory.percent);
-        if (ramPercent > config.THRESHOLDS.RAM) {
-            alerts.push({
-                type: 'RAM',
-                value: `${ramPercent}%`,
-                threshold: config.THRESHOLDS.RAM,
-                emoji: '🧠'
-            });
+        // Проверка RAM (только если включен)
+        if (this.enabled.ram) {
+            const ramPercent = parseFloat(metrics.memory.percent);
+            if (ramPercent > config.THRESHOLDS.RAM) {
+                alerts.push({
+                    type: 'RAM',
+                    value: `${ramPercent}%`,
+                    threshold: config.THRESHOLDS.RAM,
+                    emoji: '🧠'
+                });
+            }
         }
 
-        // Проверка диска
-        if (metrics.disk) {
+        // Проверка диска (только если включен)
+        if (this.enabled.disk && metrics.disk) {
             const diskPercent = parseInt(metrics.disk.percent);
             if (diskPercent > config.THRESHOLDS.DISK) {
                 alerts.push({
@@ -51,14 +63,24 @@ class AlertManager {
             }
         }
 
-        // Проверка температуры CPU
-        if (metrics.temperature.cpu && metrics.temperature.cpu > config.THRESHOLDS.TEMP_CPU) {
+        // Проверка температуры CPU (только если включен)
+        if (this.enabled.temp && metrics.temperature.cpu && metrics.temperature.cpu > config.THRESHOLDS.TEMP_CPU) {
             alerts.push({
                 type: 'Температура CPU',
                 value: `${metrics.temperature.cpu.toFixed(1)}°C`,
                 threshold: config.THRESHOLDS.TEMP_CPU,
                 emoji: '🔥'
             });
+        }
+
+        // Проверка сетевой нагрузки (только если включен)
+        if (this.enabled.network && metrics.network) {
+            // Вычисляем скорость на основе предыдущих данных
+            // Для упрощения проверяем общий трафик
+            const totalBytes = metrics.network.rxBytes + metrics.network.txBytes;
+            // Если трафик очень большой (более 1TB), это может быть проблемой
+            // Но лучше проверять скорость, а не общий объем
+            // Для скорости нужна история, поэтому пока пропускаем
         }
 
         // Отправляем только если прошло достаточно времени с последнего алерта
@@ -125,7 +147,70 @@ class AlertManager {
 
     // Периодическая проверка
     startMonitoring() {
+        // Основная проверка каждую минуту
         setInterval(() => this.checkThresholds(), config.INTERVALS.CHECK);
+        
+        // Дополнительная быстрая проверка каждые 5 секунд для критических алертов
+        setInterval(async () => {
+            try {
+                const metrics = await system.getAllMetrics();
+                
+                // CPU push alert
+                if (this.enabled.cpu && parseFloat(metrics.cpu.current) > config.THRESHOLDS.CPU) {
+                    const key = 'CPU';
+                    const now = Date.now();
+                    if (!this.lastAlertTime[key] || now - this.lastAlertTime[key] > config.INTERVALS.ALERT_COOLDOWN) {
+                        await this.bot.sendMessage(
+                            config.ADMIN_ID,
+                            `⚡ *CPU превышен: ${metrics.cpu.current}%*\nПорог: ${config.THRESHOLDS.CPU}%`,
+                            { parse_mode: 'Markdown' }
+                        );
+                        this.lastAlertTime[key] = now;
+                    }
+                }
+                
+                // RAM push alert
+                if (this.enabled.ram && parseFloat(metrics.memory.percent) > config.THRESHOLDS.RAM) {
+                    const key = 'RAM';
+                    const now = Date.now();
+                    if (!this.lastAlertTime[key] || now - this.lastAlertTime[key] > config.INTERVALS.ALERT_COOLDOWN) {
+                        await this.bot.sendMessage(
+                            config.ADMIN_ID,
+                            `🧠 *RAM превышен: ${metrics.memory.percent}%*\nПорог: ${config.THRESHOLDS.RAM}%`,
+                            { parse_mode: 'Markdown' }
+                        );
+                        this.lastAlertTime[key] = now;
+                    }
+                }
+                
+                // Network speed alert (если есть данные о сети)
+                if (this.enabled.network && metrics.network) {
+                    // Проверяем скорость через измерение
+                    const mainInterface = await system.getMainInterface();
+                    if (mainInterface) {
+                        const firstStat = await system.getNetworkStats(mainInterface);
+                        if (firstStat) {
+                            await new Promise(resolve => setTimeout(resolve, 1000));
+                            const speed = await system.getNetworkSpeed(mainInterface, firstStat);
+                            if (speed && speed.totalSpeed > config.THRESHOLDS.NETWORK_SPEED) {
+                                const key = 'Сеть';
+                                const now = Date.now();
+                                if (!this.lastAlertTime[key] || now - this.lastAlertTime[key] > config.INTERVALS.ALERT_COOLDOWN) {
+                                    await this.bot.sendMessage(
+                                        config.ADMIN_ID,
+                                        `🌐 *Высокая сетевая нагрузка: ${speed.totalSpeedFormatted}*\nПорог: ${system.formatBytes(config.THRESHOLDS.NETWORK_SPEED)}/s\nИнтерфейс: ${mainInterface}`,
+                                        { parse_mode: 'Markdown' }
+                                    );
+                                    this.lastAlertTime[key] = now;
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                // Игнорируем ошибки в быстрой проверке
+            }
+        }, 5000); // каждые 5 секунд
     }
 }
 

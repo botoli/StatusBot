@@ -1,154 +1,61 @@
 {
   "cpu": [
     {
-      "timestamp": 1772141756686,
-      "value": 4.3,
-      "load1": 0.1,
-      "load5": 0.31,
-      "load15": 0.62
-    },
-    {
-      "timestamp": 1772142225519,
-      "value": 3.2,
-      "load1": 0.08,
-      "load5": 0.09,
-      "load15": 0.37
-    },
-    {
-      "timestamp": 1772142525517,
-      "value": 2.8,
+      "timestamp": 1772144233735,
+      "value": 4.7,
       "load1": 0,
-      "load5": 0.02,
-      "load15": 0.26
+      "load5": 0,
+      "load15": 0
     },
     {
-      "timestamp": 1772142559111,
-      "value": 2.8,
-      "load1": 0.14,
-      "load5": 0.05,
-      "load15": 0.26
+      "timestamp": 1772144249521,
+      "value": 4.7,
+      "load1": 0,
+      "load5": 0,
+      "load15": 0
     },
     {
-      "timestamp": 1772142564217,
-      "value": 2.8,
-      "load1": 0.12,
-      "load5": 0.05,
-      "load15": 0.26
+      "timestamp": 1772144369482,
+      "value": 4.8,
+      "load1": 0,
+      "load5": 0,
+      "load15": 0
     },
     {
-      "timestamp": 1772142578477,
-      "value": 2.8,
-      "load1": 0.1,
-      "load5": 0.05,
-      "load15": 0.25
+      "timestamp": 1772144503310,
+      "value": 4.8,
+      "load1": 0,
+      "load5": 0,
+      "load15": 0
     }
   ],
   "memory": [
     {
-      "timestamp": 1772141756686,
-      "value": 27.8,
-      "used": 1.6,
-      "total": 5.7
+      "timestamp": 1772144233735,
+      "value": 39.3,
+      "used": 12.5,
+      "total": 31.9
     },
     {
-      "timestamp": 1772142225519,
-      "value": 27.3,
-      "used": 1.5,
-      "total": 5.7
+      "timestamp": 1772144249521,
+      "value": 39.4,
+      "used": 12.6,
+      "total": 31.9
     },
     {
-      "timestamp": 1772142525517,
-      "value": 27.3,
-      "used": 1.6,
-      "total": 5.7
+      "timestamp": 1772144369482,
+      "value": 39.5,
+      "used": 12.6,
+      "total": 31.9
     },
     {
-      "timestamp": 1772142559111,
-      "value": 27.5,
-      "used": 1.6,
-      "total": 5.7
-    },
-    {
-      "timestamp": 1772142564217,
-      "value": 27.6,
-      "used": 1.6,
-      "total": 5.7
-    },
-    {
-      "timestamp": 1772142578477,
-      "value": 27.4,
-      "used": 1.6,
-      "total": 5.7
+      "timestamp": 1772144503310,
+      "value": 39.3,
+      "used": 12.6,
+      "total": 31.9
     }
   ],
-  "disk": [
-    {
-      "timestamp": 1772141756686,
-      "value": 5,
-      "used": "21G",
-      "total": "450G"
-    },
-    {
-      "timestamp": 1772142225519,
-      "value": 5,
-      "used": "21G",
-      "total": "450G"
-    },
-    {
-      "timestamp": 1772142525517,
-      "value": 5,
-      "used": "21G",
-      "total": "450G"
-    },
-    {
-      "timestamp": 1772142559111,
-      "value": 5,
-      "used": "21G",
-      "total": "450G"
-    },
-    {
-      "timestamp": 1772142564217,
-      "value": 5,
-      "used": "21G",
-      "total": "450G"
-    },
-    {
-      "timestamp": 1772142578477,
-      "value": 5,
-      "used": "21G",
-      "total": "450G"
-    }
-  ],
-  "temperature": [
-    {
-      "timestamp": 1772141756686,
-      "value": 40,
-      "type": "cpu"
-    },
-    {
-      "timestamp": 1772142225519,
-      "value": 40,
-      "type": "cpu"
-    },
-    {
-      "timestamp": 1772142525517,
-      "value": 40,
-      "type": "cpu"
-    },
-    {
-      "timestamp": 1772142559111,
-      "value": 40,
-      "type": "cpu"
-    },
-    {
-      "timestamp": 1772142564217,
-      "value": 41,
-      "type": "cpu"
-    },
-    {
-      "timestamp": 1772142578477,
-      "value": 41,
-      "type": "cpu"
-    }
-  ]
+  "disk": [],
+  "temperature": [],
+  "network": []
 }

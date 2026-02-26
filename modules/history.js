@@ -23,7 +23,8 @@ class HistoryManager {
                     cpu: [],
                     memory: [],
                     disk: [],
-                    temperature: []
+                    temperature: [],
+                    network: []
                 });
             }
         } catch (error) {
@@ -32,16 +33,27 @@ class HistoryManager {
     }
 
     async loadHistory() {
+        const defaultHistory = {
+            cpu: [],
+            memory: [],
+            disk: [],
+            temperature: [],
+            network: []
+        };
+        
         try {
             const data = await fs.readFile(this.dataFile, 'utf8');
-            return JSON.parse(data);
-        } catch {
+            const loaded = JSON.parse(data);
+            // Убеждаемся, что все поля инициализированы
             return {
-                cpu: [],
-                memory: [],
-                disk: [],
-                temperature: []
+                cpu: loaded.cpu || [],
+                memory: loaded.memory || [],
+                disk: loaded.disk || [],
+                temperature: loaded.temperature || [],
+                network: loaded.network || []
             };
+        } catch {
+            return defaultHistory;
         }
     }
 
@@ -102,9 +114,25 @@ class HistoryManager {
             });
         }
 
+        // Network
+        if (metrics.network) {
+            history.network.push({
+                timestamp,
+                interface: metrics.network.interface,
+                rxBytes: metrics.network.rxBytes,
+                txBytes: metrics.network.txBytes,
+                rxSpeed: metrics.network.rxSpeed || 0,
+                txSpeed: metrics.network.txSpeed || 0
+            });
+        }
+
         // Обрезаем старые данные
-        ['cpu', 'memory', 'disk', 'temperature'].forEach(key => {
-            if (history[key].length > this.maxPoints) {
+        ['cpu', 'memory', 'disk', 'temperature', 'network'].forEach(key => {
+            // Убеждаемся, что поле существует и является массивом
+            if (!history[key]) {
+                history[key] = [];
+            }
+            if (Array.isArray(history[key]) && history[key].length > this.maxPoints) {
                 history[key] = history[key].slice(-this.maxPoints);
             }
         });
@@ -165,7 +193,7 @@ class HistoryManager {
         const history = await this.loadHistory();
         const weekAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
         
-        ['cpu', 'memory', 'disk', 'temperature'].forEach(key => {
+        ['cpu', 'memory', 'disk', 'temperature', 'network'].forEach(key => {
             history[key] = history[key].filter(point => point.timestamp >= weekAgo);
         });
 

@@ -195,6 +195,25 @@ class SystemMonitor {
         metrics.fans = await this.getFanSpeeds();
         metrics.voltage = await this.getVoltage();
         
+        // Добавляем сетевую статистику (основной интерфейс)
+        try {
+            const mainInterface = await this.getMainInterface();
+            if (mainInterface) {
+                const networkStat = await this.getNetworkStats(mainInterface);
+                if (networkStat) {
+                    metrics.network = {
+                        interface: mainInterface,
+                        rxBytes: networkStat.rxBytes,
+                        txBytes: networkStat.txBytes,
+                        rxPackets: networkStat.rxPackets,
+                        txPackets: networkStat.txPackets
+                    };
+                }
+            }
+        } catch (error) {
+            // Игнорируем ошибки сети
+        }
+        
         return metrics;
     }
 
@@ -208,17 +227,273 @@ class SystemMonitor {
         return '🟢';
     }
 
-    // Статус-бар загрузки
-    getLoadBar(percent, length = 10) {
+    // Статус-бар загрузки (улучшенный)
+    getLoadBar(percent, length = 20) {
         const filled = Math.round(percent / 100 * length);
         const empty = length - filled;
         
-        let bar = '█'.repeat(filled);
+        // Используем разные символы для более плавного отображения
+        let bar = '';
+        for (let i = 0; i < filled; i++) {
+            if (i === filled - 1 && percent % (100 / length) > 0) {
+                // Последний блок может быть частично заполнен
+                bar += '▓';
+            } else {
+                bar += '█';
+            }
+        }
         bar += '░'.repeat(empty);
         
-        if (percent >= 80) return `🔴 ${bar}`;
-        if (percent >= 60) return `🟡 ${bar}`;
-        return `🟢 ${bar}`;
+        // Цветовые индикаторы
+        if (percent >= 90) return `🔴 ${bar} ${percent.toFixed(1)}%`;
+        if (percent >= 80) return `🟠 ${bar} ${percent.toFixed(1)}%`;
+        if (percent >= 60) return `🟡 ${bar} ${percent.toFixed(1)}%`;
+        if (percent >= 40) return `🟢 ${bar} ${percent.toFixed(1)}%`;
+        return `⚪ ${bar} ${percent.toFixed(1)}%`;
+    }
+
+    // Красивый статус-бар с прогрессом
+    getProgressBar(current, total, label, unit = '', length = 20) {
+        const percent = (current / total) * 100;
+        const filled = Math.round(percent / 100 * length);
+        const empty = length - filled;
+        
+        let bar = '█'.repeat(filled) + '░'.repeat(empty);
+        
+        // Форматируем значения
+        const currentFormatted = typeof current === 'number' ? current.toFixed(1) : current;
+        const totalFormatted = typeof total === 'number' ? total.toFixed(1) : total;
+        
+        return `${label}\n${bar} ${currentFormatted}${unit} / ${totalFormatted}${unit} (${percent.toFixed(1)}%)`;
+    }
+
+    // ASCII график для истории (мини-график)
+    getMiniChart(data, height = 5, width = 20) {
+        if (!data || data.length === 0) return '';
+        
+        const max = Math.max(...data);
+        const min = Math.min(...data);
+        const range = max - min || 1;
+        
+        // Создаем сетку
+        const chart = Array(height).fill(null).map(() => Array(width).fill(' '));
+        
+        // Заполняем график
+        data.slice(-width).forEach((value, x) => {
+            const normalized = (value - min) / range;
+            const y = Math.floor(normalized * (height - 1));
+            const char = y === height - 1 ? '▁' : y === 0 ? '▔' : '█';
+            chart[height - 1 - y][x] = char;
+        });
+        
+        return chart.map(row => row.join('')).join('\n');
+    }
+
+    // Красивое форматирование метрики
+    formatMetric(label, value, unit, bar = null) {
+        let result = `${label} *${value}${unit}*`;
+        if (bar) {
+            result += `\n${bar}`;
+        }
+        return result;
+    }
+
+    // Получить статус системы (красивый)
+    getSystemStatus(metrics) {
+        const lines = [];
+        
+        // Заголовок
+        lines.push(`🖥 *${os.hostname()}*`);
+        lines.push('═'.repeat(25));
+        lines.push('');
+        
+        // CPU
+        const cpuPercent = parseFloat(metrics.cpu.current);
+        lines.push(`⚡ *CPU*`);
+        lines.push(this.getLoadBar(cpuPercent));
+        lines.push(`   Load: ${metrics.cpu.load1} | ${metrics.cpu.load5} | ${metrics.cpu.load15}`);
+        lines.push('');
+        
+        // RAM
+        const ramPercent = parseFloat(metrics.memory.percent);
+        lines.push(`🧠 *RAM*`);
+        lines.push(this.getLoadBar(ramPercent));
+        lines.push(`   ${metrics.memory.used}GB / ${metrics.memory.total}GB`);
+        lines.push('');
+        
+        // Disk
+        if (metrics.disk) {
+            const diskPercent = parseInt(metrics.disk.percent);
+            lines.push(`💽 *DISK*`);
+            lines.push(this.getLoadBar(diskPercent));
+            lines.push(`   ${metrics.disk.used} / ${metrics.disk.total}`);
+            lines.push('');
+        }
+        
+        // Temperature
+        if (metrics.temperature.cpu) {
+            const temp = metrics.temperature.cpu;
+            const emoji = this.getTempEmoji(temp);
+            lines.push(`${emoji} *TEMPERATURE*`);
+            lines.push(`   CPU: ${temp.toFixed(1)}°C`);
+            if (metrics.temperature.gpu) {
+                lines.push(`   GPU: ${metrics.temperature.gpu.toFixed(1)}°C`);
+            }
+            if (metrics.temperature.ssd) {
+                lines.push(`   SSD: ${metrics.temperature.ssd.toFixed(1)}°C`);
+            }
+            lines.push('');
+        }
+        
+        // Network
+        if (metrics.network) {
+            lines.push(`🌐 *NETWORK* (${metrics.network.interface})`);
+            lines.push(`   ⬇️ RX: ${this.formatBytes(metrics.network.rxBytes)}`);
+            lines.push(`   ⬆️ TX: ${this.formatBytes(metrics.network.txBytes)}`);
+            lines.push('');
+        }
+        
+        // Uptime
+        lines.push(`⏱️ *Uptime*: ${metrics.uptime}`);
+        
+        return lines.join('\n');
+    }
+
+    // Форматирование байтов
+    formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+
+    // Получить список сетевых интерфейсов
+    async getNetworkInterfaces() {
+        try {
+            const { stdout } = await execPromise('ip -o link show | awk \'{print $2}\' | sed \'s/://\'');
+            const interfaces = stdout.split('\n').filter(iface => iface.trim() && !iface.includes('lo'));
+            return interfaces.map(iface => iface.trim());
+        } catch (error) {
+            // Fallback на os.networkInterfaces()
+            const nets = os.networkInterfaces();
+            return Object.keys(nets || {}).filter(iface => iface !== 'lo');
+        }
+    }
+
+    // Получить статистику сетевого интерфейса
+    async getNetworkStats(interfaceName) {
+        try {
+            // Читаем из /proc/net/dev
+            const { stdout } = await execPromise(`cat /proc/net/dev | grep ${interfaceName}`);
+            const parts = stdout.trim().split(/\s+/);
+            
+            if (parts.length < 10) return null;
+
+            const rxBytes = parseInt(parts[1]);
+            const rxPackets = parseInt(parts[2]);
+            const txBytes = parseInt(parts[9]);
+            const txPackets = parseInt(parts[10]);
+
+            return {
+                interface: interfaceName,
+                rxBytes,
+                rxPackets,
+                txBytes,
+                txPackets,
+                rxFormatted: this.formatBytes(rxBytes),
+                txFormatted: this.formatBytes(txBytes),
+                totalBytes: rxBytes + txBytes,
+                totalFormatted: this.formatBytes(rxBytes + txBytes)
+            };
+        } catch (error) {
+            return null;
+        }
+    }
+
+    // Получить скорость сети (за секунду)
+    async getNetworkSpeed(interfaceName, previousStats = null) {
+        const currentStats = await this.getNetworkStats(interfaceName);
+        if (!currentStats) return null;
+
+        if (!previousStats) {
+            return {
+                interface: interfaceName,
+                rxSpeed: 0,
+                txSpeed: 0,
+                totalSpeed: 0,
+                rxSpeedFormatted: '0 B/s',
+                txSpeedFormatted: '0 B/s',
+                totalSpeedFormatted: '0 B/s'
+            };
+        }
+
+        const timeDiff = 1; // предполагаем 1 секунду
+        const rxSpeed = (currentStats.rxBytes - previousStats.rxBytes) / timeDiff;
+        const txSpeed = (currentStats.txBytes - previousStats.txBytes) / timeDiff;
+        const totalSpeed = rxSpeed + txSpeed;
+
+        return {
+            interface: interfaceName,
+            rxSpeed,
+            txSpeed,
+            totalSpeed,
+            rxSpeedFormatted: this.formatBytes(rxSpeed) + '/s',
+            txSpeedFormatted: this.formatBytes(txSpeed) + '/s',
+            totalSpeedFormatted: this.formatBytes(totalSpeed) + '/s',
+            currentStats
+        };
+    }
+
+    // Получить все сетевые интерфейсы со статистикой
+    async getAllNetworkStats() {
+        const interfaces = await this.getNetworkInterfaces();
+        const stats = [];
+
+        for (const iface of interfaces) {
+            const stat = await this.getNetworkStats(iface);
+            if (stat) {
+                stats.push(stat);
+            }
+        }
+
+        return stats;
+    }
+
+    // Получить основной интерфейс (обычно eth0, wlan0, или первый активный)
+    async getMainInterface() {
+        const interfaces = await this.getNetworkInterfaces();
+        
+        // Приоритет: eth0, enp*, wlan0, wlp*, первый активный
+        const priority = ['eth0', 'enp', 'wlan0', 'wlp'];
+        
+        for (const priorityName of priority) {
+            const found = interfaces.find(iface => iface.startsWith(priorityName));
+            if (found) return found;
+        }
+
+        return interfaces[0] || null;
+    }
+
+    // Получить IP адреса интерфейса
+    async getInterfaceIPs(interfaceName) {
+        try {
+            const { stdout } = await execPromise(`ip addr show ${interfaceName} | grep "inet "`);
+            const ips = stdout.split('\n').map(line => {
+                const match = line.match(/inet (\S+)/);
+                return match ? match[1] : null;
+            }).filter(ip => ip);
+
+            return ips;
+        } catch {
+            const nets = os.networkInterfaces();
+            const iface = nets[interfaceName];
+            if (!iface) return [];
+            
+            return iface
+                .filter(details => details.family === 'IPv4')
+                .map(details => details.address);
+        }
     }
 }
 
