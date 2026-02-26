@@ -375,6 +375,11 @@ async function handleServices(ctx) {
 // Детали службы
 async function handleService(ctx, serviceName) {
     const service = config.SERVICES.find(s => s.systemName === serviceName);
+    if (!service) {
+        await bot.sendMessage(ctx.chatId, '❌ Служба не найдена');
+        return;
+    }
+    
     const status = await services.getServiceStatus(serviceName);
     
     let emoji = '⚪';
@@ -387,29 +392,38 @@ async function handleService(ctx, serviceName) {
     text += `Статус: *${status.status}*\n`;
     if (status.pid) text += `PID: ${status.pid}\n`;
     if (status.memory) text += `Память: ${status.memory}\n`;
+    text += `\nВыберите действие:`;
     
-    // Кнопки с подтверждением для опасных действий
-    await safeEdit(
-        ctx,
-        text,
+    const buttons = [
         [
-            [
-                { text: "▶️ Start", callback_data: `confirm_start_${serviceName}` },
-                { text: "⏹️ Stop", callback_data: `confirm_stop_${serviceName}` }
-            ],
-            [
-                { text: "🔄 Restart", callback_data: `confirm_restart_${serviceName}` }
-            ],
-            [
-                { text: "📋 Logs 20", callback_data: `logs_${serviceName}_20` },
-                { text: "📋 Logs 50", callback_data: `logs_${serviceName}_50` }
-            ],
-            [
-                { text: "🔄 Обновить", callback_data: `service_${serviceName}` },
-                { text: "◀️ Назад", callback_data: "back_services" }
-            ]
+            { text: "▶️ Start", callback_data: `confirm_start_${serviceName}` },
+            { text: "⏹️ Stop", callback_data: `confirm_stop_${serviceName}` }
+        ],
+        [
+            { text: "🔄 Restart", callback_data: `confirm_restart_${serviceName}` }
+        ],
+        [
+            { text: "📋 Logs 20", callback_data: `logs_${serviceName}_20` },
+            { text: "📋 Logs 50", callback_data: `logs_${serviceName}_50` }
+        ],
+        [
+            { text: "🔄 Обновить", callback_data: `service_${serviceName}` },
+            { text: "◀️ Назад", callback_data: "back_services" }
         ]
-    );
+    ];
+    
+    // Если это callback_query, редактируем сообщение
+    if (ctx.query) {
+        await safeEdit(ctx, text, buttons);
+    } else {
+        // Если это обычное сообщение, отправляем новое с inline-кнопками
+        await bot.sendMessage(ctx.chatId, text, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+                inline_keyboard: buttons
+            }
+        });
+    }
 }
 
 // Подтверждение действия
