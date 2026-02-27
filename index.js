@@ -64,11 +64,8 @@ function removeKeyboard() {
 // Главная клавиатура
 function getMainKeyboard() {
     return createKeyboard([
-        ['📊 СТАТУС', '🌐 СЕТЬ'],
-        ['🧰 СЛУЖБЫ', '📈 ИСТОРИЯ'],
-        ['🔔 АЛЕРТЫ', '⚙️ СИСТЕМА'],
-        ['🌐 Измерить интернет', '📊 Система'],
-        ['🖥 СЕРВЕРЫ']
+        ['📊 СТАТУС', '🧰 СЛУЖБЫ'],
+        ['📈 ИСТОРИЯ', '⚙️ СИСТЕМА']
     ]);
 }
 
@@ -79,32 +76,12 @@ function getStatusKeyboard() {
     ]);
 }
 
-// Клавиатура сети
-function getNetworkKeyboard() {
-    return createKeyboard([
-        ['📊 Все интерфейсы', '⚡ Скорость'],
-        ['◀️ НАЗАД']
-    ]);
-}
-
 // Клавиатура истории
 function getHistoryKeyboard() {
     return createKeyboard([
         ['🕐 24ч', '🕑 48ч'],
         ['📅 7д', '📅 30д'],
         ['◀️ НАЗАД']
-    ]);
-}
-
-// Клавиатура алертов
-function getAlertsKeyboard() {
-    return createKeyboard([
-        ['⚡ CPU +5', '⚡ CPU -5', '🔔 CPU'],
-        ['🧠 RAM +5', '🧠 RAM -5', '🔔 RAM'],
-        ['💽 DISK +5', '💽 DISK -5', '🔔 DISK'],
-        ['🔥 TEMP +5', '🔥 TEMP -5', '🔔 TEMP'],
-        ['🌐 СЕТЬ +10MB', '🌐 СЕТЬ -10MB', '🔔 СЕТЬ'],
-        ['💾 Сохранить', '◀️ НАЗАД']
     ]);
 }
 
@@ -154,14 +131,7 @@ async function safeEdit(ctx, text, buttons, parseMode = 'Markdown') {
 
 // ============== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ СТАТУСА ==============
 
-const liveIntervals = {}; // Хранилище активных интервалов статуса
-
-function stopLive(chatId) {
-    if (liveIntervals[chatId]) {
-        clearInterval(liveIntervals[chatId]);
-        delete liveIntervals[chatId];
-    }
-}
+const liveSessions = {}; // Хранилище активных live-сессий статуса { interval, messageId }
 
 function getStatusColor(percent) {
     if (percent >= 80) return '🔴';
@@ -293,8 +263,21 @@ async function handleMainMenu(ctx) {
 
 // Статус
 async function handleStatus(ctx) {
-    // Останавливаем предыдущий live, если был
-    stopLive(ctx.chatId);
+    // Останавливаем предыдущий live, если был, и удаляем старое сообщение
+    const prev = liveSessions[ctx.chatId];
+    if (prev) {
+        if (prev.interval) {
+            clearInterval(prev.interval);
+        }
+        if (prev.messageId) {
+            try {
+                await bot.deleteMessage(ctx.chatId, prev.messageId);
+            } catch (e) {
+                // Игнорируем ошибки удаления (сообщение уже могло быть удалено)
+            }
+        }
+        delete liveSessions[ctx.chatId];
+    }
 
     const metrics = await system.getAllMetrics();
     const text = buildRealtimeStatusText(metrics);
@@ -313,11 +296,15 @@ async function handleStatus(ctx) {
             });
         } catch (error) {
             console.error('Ошибка в live-статусе:', error);
-            stopLive(ctx.chatId);
+            const session = liveSessions[ctx.chatId];
+            if (session && session.interval) {
+                clearInterval(session.interval);
+            }
+            delete liveSessions[ctx.chatId];
         }
     }, 1000);
 
-    liveIntervals[ctx.chatId] = interval;
+    liveSessions[ctx.chatId] = { interval, messageId: msg.message_id };
 }
 
 // Службы
@@ -557,211 +544,6 @@ async function handleHistPeriod(ctx, hours) {
     await sendWithKeyboard(bot, ctx.chatId, text, getHistoryKeyboard());
 }
 
-// Алерты
-async function handleAlerts(ctx) {
-    const networkThreshold = system.formatBytes(config.THRESHOLDS.NETWORK_SPEED || 100 * 1024 * 1024) + '/s';
-    
-    let text = `🔔 *АЛЕРТЫ*\n`;
-    text += '═'.repeat(25) + '\n\n';
-    
-    // CPU
-    const cpuStatus = alerts.enabled?.cpu ? '🔔' : '🔕';
-    text += `⚡ *CPU*\n`;
-    text += `   Порог: *${config.THRESHOLDS.CPU}%* ${cpuStatus}\n\n`;
-    
-    // RAM
-    const ramStatus = alerts.enabled?.ram ? '🔔' : '🔕';
-    text += `🧠 *RAM*\n`;
-    text += `   Порог: *${config.THRESHOLDS.RAM}%* ${ramStatus}\n\n`;
-    
-    // DISK
-    const diskStatus = alerts.enabled?.disk ? '🔔' : '🔕';
-    text += `💽 *DISK*\n`;
-    text += `   Порог: *${config.THRESHOLDS.DISK}%* ${diskStatus}\n\n`;
-    
-    // TEMP
-    const tempStatus = alerts.enabled?.temp ? '🔔' : '🔕';
-    text += `🔥 *TEMP*\n`;
-    text += `   Порог: *${config.THRESHOLDS.TEMP_CPU}°C* ${tempStatus}\n\n`;
-    
-    // NETWORK
-    const networkStatus = alerts.enabled?.network ? '🔔' : '🔕';
-    text += `🌐 *СЕТЬ*\n`;
-    text += `   Порог: *${networkThreshold}* ${networkStatus}\n`;
-    
-    await sendWithKeyboard(bot, ctx.chatId, text, getAlertsKeyboard());
-}
-
-// Выбор сервера
-async function handleServers(ctx) {
-    let text = `🖥 *ВЫБОР СЕРВЕРА*\n\nТекущий: *${getCurrentServer().name}*\n\nВыберите сервер:`;
-    
-    // Для обычных сообщений используем клавиатуру
-    if (ctx.msg) {
-        const serversKeyboard = createKeyboard([
-            ...servers.map((server, index) => {
-                const prefix = index === currentServerIndex ? '✅' : '⚪';
-                return [`${prefix} ${server.name}`];
-            }),
-            ['◀️ НАЗАД']
-        ]);
-        await sendWithKeyboard(bot, ctx.chatId, text, serversKeyboard);
-    } else {
-        // Для callback_query используем inline клавиатуру
-        const buttons = servers.map((server, index) => {
-            const prefix = index === currentServerIndex ? '✅' : '⚪';
-            return [{ text: `${prefix} ${server.name}`, callback_data: `server_select_${index}` }];
-        });
-        buttons.push([{ text: "◀️ Назад", callback_data: "back_main" }]);
-        await safeEdit(ctx, text, buttons);
-    }
-}
-
-// Сетевой мониторинг
-async function handleNetwork(ctx) {
-    const text = `🌐 *СЕТЕВОЙ МОНИТОРИНГ*\n\nВыберите действие:`;
-    await sendWithKeyboard(bot, ctx.chatId, text, getNetworkKeyboard());
-}
-
-// Все сетевые интерфейсы
-async function handleNetworkAll(ctx) {
-    if (ctx.query) {
-        await ctx.bot.answerCallbackQuery(ctx.query.id, { text: '⏳ Загружаю статистику...' });
-    }
-    
-    const allStats = await system.getAllNetworkStats();
-    
-    if (allStats.length === 0) {
-        await sendWithKeyboard(bot, ctx.chatId, '❌ *Нет доступных сетевых интерфейсов*', getNetworkKeyboard());
-        return;
-    }
-    
-    let text = `🌐 *ВСЕ СЕТЕВЫЕ ИНТЕРФЕЙСЫ*\n`;
-    text += '═'.repeat(30) + '\n\n';
-    
-    for (const stat of allStats) {
-        const ips = await system.getInterfaceIPs(stat.interface);
-        text += `📡 *${stat.interface}*\n`;
-        if (ips.length > 0) {
-            text += `   🌐 IP: \`${ips.join('`, `')}\`\n`;
-        }
-        text += `   ⬇️ RX: *${stat.rxFormatted}*\n`;
-        text += `      📦 ${stat.rxPackets.toLocaleString()} пакетов\n`;
-        text += `   ⬆️ TX: *${stat.txFormatted}*\n`;
-        text += `      📦 ${stat.txPackets.toLocaleString()} пакетов\n`;
-        text += `   📊 Всего: *${stat.totalFormatted}*\n`;
-        text += '\n';
-    }
-    
-    await sendWithKeyboard(bot, ctx.chatId, text, getNetworkKeyboard());
-}
-
-// Список интерфейсов для выбора
-async function handleNetworkInterfaces(ctx) {
-    const interfaces = await system.getNetworkInterfaces();
-    
-    if (interfaces.length === 0) {
-        await sendWithKeyboard(bot, ctx.chatId, '❌ *Нет доступных сетевых интерфейсов*', getNetworkKeyboard());
-        return;
-    }
-    
-    // Создаем клавиатуру с интерфейсами
-    const keyboardButtons = interfaces.map(iface => [`📡 ${iface}`]);
-    keyboardButtons.push(['◀️ НАЗАД']);
-    
-    const text = `🌐 *ВЫБОР ИНТЕРФЕЙСА*\n\nВыберите интерфейс для детальной информации:`;
-    await sendWithKeyboard(bot, ctx.chatId, text, createKeyboard(keyboardButtons));
-}
-
-// Детали конкретного интерфейса
-async function handleNetworkInterface(ctx, interfaceName) {
-    if (ctx.query) {
-        await ctx.bot.answerCallbackQuery(ctx.query.id, { text: '⏳ Загружаю...' });
-    }
-    
-    const stat = await system.getNetworkStats(interfaceName);
-    const ips = await system.getInterfaceIPs(interfaceName);
-    
-    if (!stat) {
-        await bot.sendMessage(ctx.chatId, `❌ Не удалось получить статистику для ${interfaceName}`);
-        return;
-    }
-    
-    let text = `📡 *${interfaceName}*\n`;
-    text += '═'.repeat(30) + '\n\n';
-    
-    if (ips.length > 0) {
-        text += `🌐 *IP адреса*\n`;
-        ips.forEach(ip => {
-            text += `   • \`${ip}\`\n`;
-        });
-        text += '\n';
-    }
-    
-    text += `📊 *Статистика*\n`;
-    text += `   ⬇️ Принято:\n`;
-    text += `      ${stat.rxFormatted}\n`;
-    text += `      📦 ${stat.rxPackets.toLocaleString()} пакетов\n\n`;
-    text += `   ⬆️ Отправлено:\n`;
-    text += `      ${stat.txFormatted}\n`;
-    text += `      📦 ${stat.txPackets.toLocaleString()} пакетов\n\n`;
-    text += `   📊 Всего: *${stat.totalFormatted}*\n`;
-    
-    // Создаем специальную клавиатуру для интерфейса
-    const interfaceKeyboard = createKeyboard([
-        ['⚡ Скорость'],
-        ['◀️ НАЗАД']
-    ]);
-    
-    await sendWithKeyboard(bot, ctx.chatId, text, interfaceKeyboard);
-}
-
-// Скорость сети
-async function handleNetworkSpeed(ctx, interfaceName = null) {
-    if (ctx.query) {
-        await ctx.bot.answerCallbackQuery(ctx.query.id, { text: '⏳ Измеряю скорость...' });
-    } else {
-        await bot.sendMessage(ctx.chatId, '⏳ Измеряю скорость...');
-    }
-    
-    if (!interfaceName) {
-        interfaceName = await system.getMainInterface();
-        if (!interfaceName) {
-            await bot.sendMessage(ctx.chatId, '❌ Не удалось определить основной интерфейс');
-            return;
-        }
-    }
-    
-    // Первое измерение
-    const firstStat = await system.getNetworkStats(interfaceName);
-    if (!firstStat) {
-        await bot.sendMessage(ctx.chatId, `❌ Не удалось получить статистику для ${interfaceName}`);
-        return;
-    }
-    
-    // Ждем 1 секунду
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    
-    // Второе измерение
-    const speed = await system.getNetworkSpeed(interfaceName, firstStat);
-    
-    if (!speed) {
-        await bot.sendMessage(ctx.chatId, `❌ Ошибка измерения скорости`);
-        return;
-    }
-    
-    let text = `⚡ *СКОРОСТЬ СЕТИ*\n`;
-    text += `📡 *${interfaceName}*\n`;
-    text += '═'.repeat(25) + '\n\n';
-    text += `⬇️ *Входящая*\n   ${speed.rxSpeedFormatted}\n\n`;
-    text += `⬆️ *Исходящая*\n   ${speed.txSpeedFormatted}\n\n`;
-    text += `📊 *Общая*\n   *${speed.totalSpeedFormatted}*\n`;
-    
-    await sendWithKeyboard(bot, ctx.chatId, text, getNetworkKeyboard());
-}
-
-// График сетевой активности - удалено (графики убраны)
-
 // Система
 async function handleSystem(ctx) {
     const text = `⚙️ *СИСТЕМА*\n\nВыберите действие:`;
@@ -872,17 +654,7 @@ const routeHandlers = {
     'menu_status': handleStatus,
     'menu_services': handleServices,
     'menu_history': handleHistory,
-    'menu_alerts': handleAlerts,
     'menu_system': handleSystem,
-    'menu_network': handleNetwork,
-    
-    // Серверы
-    'menu_servers': handleServers,
-    
-    // Сеть
-    'network_all': handleNetworkAll,
-    'network_interfaces': handleNetworkInterfaces,
-    'network_speed': handleNetworkSpeed,
     
     // Система
     'system_details': handleSystemDetails,
@@ -968,11 +740,6 @@ bot.on('message', async (msg) => {
             return;
         }
         
-        if (text === '🌐 СЕТЬ' || text === '🌐 Сеть') {
-            await handleNetwork(ctx);
-            return;
-        }
-        
         if (text === '🧰 СЛУЖБЫ' || text === '🧰 Службы') {
             await handleServices(ctx);
             return;
@@ -982,19 +749,9 @@ bot.on('message', async (msg) => {
             await handleHistory(ctx);
             return;
         }
-        
-        if (text === '🔔 АЛЕРТЫ' || text === '🔔 Алерты') {
-            await handleAlerts(ctx);
-            return;
-        }
-        
+
         if (text === '⚙️ СИСТЕМА' || text === '⚙️ Система') {
             await handleSystem(ctx);
-            return;
-        }
-        
-        if (text === '🖥 СЕРВЕРЫ' || text === '🖥 Серверы') {
-            await handleServers(ctx);
             return;
         }
         
@@ -1026,14 +783,6 @@ bot.on('message', async (msg) => {
             return;
         }
         
-        // Сеть - выбор интерфейса
-        if (text.startsWith('📡 ')) {
-            const interfaceName = text.replace('📡 ', '');
-            await handleNetworkInterface(ctx, interfaceName);
-            return;
-        }
-        
-        
         // Система
         if (text === '📋 Детали') {
             await handleSystemDetails(ctx);
@@ -1044,39 +793,7 @@ bot.on('message', async (msg) => {
             await handleSystemUptime(ctx);
             return;
         }
-        
-        // Сеть
-        if (text === '📊 Все интерфейсы') {
-            await handleNetworkAll(ctx);
-            return;
-        }
-        
-        if (text === '🔍 Выбрать') {
-            await handleNetworkInterfaces(ctx);
-            return;
-        }
-        
-        if (text === '⚡ Скорость') {
-            await handleNetworkSpeed(ctx);
-            return;
-        }
-        
-        // Быстрые кнопки
-        if (text === '🌐 Измерить интернет' || text === '🌐 Измерить Интернет') {
-            await handleNetworkSpeed(ctx);
-            return;
-        }
-        
-        if (text === '📊 Система' || text === '📊 Система-данные') {
-            await handleSystemDetails(ctx);
-            return;
-        }
-        
-        if (text === '🧰 Службы' || text === '🧰 СЛУЖБЫ') {
-            await handleServices(ctx);
-            return;
-        }
-        
+
         // Обработка нажатий на службы (кнопки клавиатуры)
         if (text === '🔄 Обновить все') {
             await handleServices(ctx);
@@ -1097,110 +814,7 @@ bot.on('message', async (msg) => {
             await handleService(ctx, service.systemName);
             return;
         }
-        
-        // Алерты
-        if (text.startsWith('⚡ CPU +5')) {
-            config.THRESHOLDS.CPU = Math.min(100, config.THRESHOLDS.CPU + 5);
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text.startsWith('⚡ CPU -5')) {
-            config.THRESHOLDS.CPU = Math.max(10, config.THRESHOLDS.CPU - 5);
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text === '🔔 CPU') {
-            if (!alerts.enabled) alerts.enabled = {};
-            alerts.enabled.cpu = !alerts.enabled.cpu;
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text.startsWith('🧠 RAM +5')) {
-            config.THRESHOLDS.RAM = Math.min(100, config.THRESHOLDS.RAM + 5);
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text.startsWith('🧠 RAM -5')) {
-            config.THRESHOLDS.RAM = Math.max(10, config.THRESHOLDS.RAM - 5);
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text === '🔔 RAM') {
-            if (!alerts.enabled) alerts.enabled = {};
-            alerts.enabled.ram = !alerts.enabled.ram;
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text.startsWith('💽 DISK +5')) {
-            config.THRESHOLDS.DISK = Math.min(100, config.THRESHOLDS.DISK + 5);
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text.startsWith('💽 DISK -5')) {
-            config.THRESHOLDS.DISK = Math.max(10, config.THRESHOLDS.DISK - 5);
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text === '🔔 DISK') {
-            if (!alerts.enabled) alerts.enabled = {};
-            alerts.enabled.disk = !alerts.enabled.disk;
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text.startsWith('🔥 TEMP +5')) {
-            config.THRESHOLDS.TEMP_CPU = Math.min(120, config.THRESHOLDS.TEMP_CPU + 5);
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text.startsWith('🔥 TEMP -5')) {
-            config.THRESHOLDS.TEMP_CPU = Math.max(30, config.THRESHOLDS.TEMP_CPU - 5);
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text === '🔔 TEMP') {
-            if (!alerts.enabled) alerts.enabled = {};
-            alerts.enabled.temp = !alerts.enabled.temp;
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text.startsWith('🌐 СЕТЬ +10MB')) {
-            config.THRESHOLDS.NETWORK_SPEED = Math.min(1000 * 1024 * 1024, (config.THRESHOLDS.NETWORK_SPEED || 100 * 1024 * 1024) + 10 * 1024 * 1024);
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text.startsWith('🌐 СЕТЬ -10MB')) {
-            config.THRESHOLDS.NETWORK_SPEED = Math.max(10 * 1024 * 1024, (config.THRESHOLDS.NETWORK_SPEED || 100 * 1024 * 1024) - 10 * 1024 * 1024);
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text === '🔔 СЕТЬ') {
-            if (!alerts.enabled) alerts.enabled = {};
-            alerts.enabled.network = !alerts.enabled.network;
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        if (text === '💾 Сохранить') {
-            config.saveThresholds();
-            await bot.sendMessage(ctx.chatId, '✅ Пороги сохранены');
-            await handleAlerts(ctx);
-            return;
-        }
-        
+
     } catch (error) {
         console.error('❌ Ошибка в обработчике сообщений:', error);
         await bot.sendMessage(msg.chat.id, '❌ Ошибка обработки команды');
@@ -1265,77 +879,6 @@ bot.on('callback_query', async (query) => {
             const serviceName = parts[1];
             const lines = parseInt(parts[2]);
             await handleLogs(ctx, serviceName, lines);
-            return;
-        }
-        
-        // Алерты
-        if (data.startsWith('alert_')) {
-            const parts = data.split('_');
-            const type = parts[1];
-            const op = parts[2];
-            
-            let thresholdKey = type.toUpperCase();
-            if (type === 'temp') thresholdKey = 'TEMP_CPU';
-            if (type === 'network') thresholdKey = 'NETWORK_SPEED';
-            
-            let current = config.THRESHOLDS[thresholdKey] || (thresholdKey === 'NETWORK_SPEED' ? 100 * 1024 * 1024 : 80);
-            
-            if (op === 'plus') {
-                if (thresholdKey === 'TEMP_CPU') current = Math.min(120, current + 5);
-                else if (thresholdKey === 'NETWORK_SPEED') current = Math.min(1000 * 1024 * 1024, current + 10 * 1024 * 1024); // +10MB/s
-                else current = Math.min(100, current + 5);
-            }
-            if (op === 'minus') {
-                if (thresholdKey === 'TEMP_CPU') current = Math.max(30, current - 5);
-                else if (thresholdKey === 'NETWORK_SPEED') current = Math.max(10 * 1024 * 1024, current - 10 * 1024 * 1024); // -10MB/s
-                else current = Math.max(10, current - 5);
-            }
-            
-            config.THRESHOLDS[thresholdKey] = current;
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        // Сохранение порогов
-        if (data === 'alert_save') {
-            config.saveThresholds();
-            await ctx.bot.answerCallbackQuery(ctx.query.id, { text: '✅ Пороги сохранены' });
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        // Toggle алертов
-        if (data.startsWith('toggle_')) {
-            const type = data.split('_')[1];
-            if (!alerts.enabled) alerts.enabled = {};
-            alerts.enabled[type] = !alerts.enabled[type];
-            await handleAlerts(ctx);
-            return;
-        }
-        
-        // Сетевые интерфейсы
-        if (data.startsWith('network_iface_')) {
-            const interfaceName = data.replace('network_iface_', '');
-            await handleNetworkInterface(ctx, interfaceName);
-            return;
-        }
-        
-        // Скорость сети для конкретного интерфейса
-        if (data.startsWith('network_speed_')) {
-            const interfaceName = data.replace('network_speed_', '');
-            await handleNetworkSpeed(ctx, interfaceName);
-            return;
-        }
-        
-        
-        // Выбор сервера
-        if (data.startsWith('server_select_')) {
-            const index = parseInt(data.split('_')[2]);
-            if (index >= 0 && index < servers.length) {
-                currentServerIndex = index;
-                await ctx.bot.answerCallbackQuery(ctx.query.id, { text: `✅ Выбран сервер: ${servers[index].name}` });
-                await handleMainMenu(ctx);
-            }
             return;
         }
         
