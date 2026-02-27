@@ -173,12 +173,18 @@ function getBlockBar(percent, blocks = 10) {
     const clamped = Math.max(0, Math.min(100, percent));
     const filled = Math.round(clamped / 100 * blocks);
     const empty = blocks - filled;
-    return '🟩'.repeat(filled) + '⬜'.repeat(empty);
+    return '🟩'.repeat(filled) + '⬜️'.repeat(empty);
 }
 
 function buildRealtimeStatusText(metrics) {
-    let text = `🖥️ ${os.hostname()}\n`;
+    let text = `🖥 ${os.hostname()}\n`;
     text += '────────────\n\n';
+
+    // Название процессора
+    const cpus = os.cpus && os.cpus();
+    if (cpus && cpus.length > 0 && cpus[0].model) {
+        text += `${cpus[0].model.trim()}\n\n`;
+    }
 
     const cpuPercent = parseFloat(metrics.cpu.current) || 0;
     const ramPercent = parseFloat(metrics.memory.percent) || 0;
@@ -190,12 +196,23 @@ function buildRealtimeStatusText(metrics) {
 
     // RAM
     text += `RAM  ${getStatusColor(ramPercent)} ${ramPercent.toFixed(0)}%\n`;
-    text += `${getBlockBar(ramPercent)}\n\n`;
+    text += `${getBlockBar(ramPercent)}\n`;
+    // Объём RAM
+    if (metrics.memory && metrics.memory.used && metrics.memory.total) {
+        text += `${metrics.memory.used}GB / ${metrics.memory.total}GB\n\n`;
+    } else {
+        text += '\n';
+    }
 
     // DISK
     if (diskPercent !== null) {
         text += `DISK ${getStatusColor(diskPercent)} ${diskPercent.toFixed(0)}%\n`;
-        text += `${getBlockBar(diskPercent)}\n\n`;
+        text += `${getBlockBar(diskPercent)}\n`;
+        if (metrics.disk && metrics.disk.used && metrics.disk.total) {
+            text += `${metrics.disk.used} / ${metrics.disk.total}\n\n`;
+        } else {
+            text += '\n';
+        }
     }
 
     // Температура и аптайм
@@ -783,7 +800,7 @@ async function handleSystemDetails(ctx) {
     text += `   Cores: ${os.cpus().length}\n`;
     text += '\n';
     
-    // RAM детально!
+    // RAM детально
     const ramPercent = parseFloat(metrics.memory.percent);
     text += `🧠 *RAM*\n`;
     text += system.getLoadBar(ramPercent) + '\n';
