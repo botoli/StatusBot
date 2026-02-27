@@ -289,8 +289,8 @@ async function handleStatus(ctx) {
     const metrics = await system.getAllMetrics();
     const text = buildRealtimeStatusText(metrics);
 
-    // Отправляем сообщение без изменения клавиатуры
-    const msg = await bot.sendMessage(ctx.chatId, text, { parse_mode: 'Markdown' });
+    // Отправляем сообщение с клавиатурой статуса (кнопка "Назад")
+    const msg = await sendWithKeyboard(bot, ctx.chatId, text, getStatusKeyboard(), 'Markdown');
 
     const interval = setInterval(async () => {
         try {
