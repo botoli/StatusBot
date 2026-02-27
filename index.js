@@ -282,7 +282,8 @@ async function handleStatus(ctx) {
     const metrics = await system.getAllMetrics();
     const text = buildRealtimeStatusText(metrics);
 
-    const msg = await sendWithKeyboard(bot, ctx.chatId, text, getStatusKeyboard());
+    // Отправляем сообщение без изменения клавиатуры
+    const msg = await bot.sendMessage(ctx.chatId, text, { parse_mode: 'Markdown' });
 
     const interval = setInterval(async () => {
         try {
@@ -291,8 +292,7 @@ async function handleStatus(ctx) {
             await bot.editMessageText(t, {
                 chat_id: ctx.chatId,
                 message_id: msg.message_id,
-                parse_mode: 'Markdown',
-                reply_markup: getStatusKeyboard().reply_markup
+                parse_mode: 'Markdown'
             });
         } catch (error) {
             console.error('Ошибка в live-статусе:', error);
