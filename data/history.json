@@ -27,6 +27,13 @@
       "load1": 0,
       "load5": 0,
       "load15": 0
+    },
+    {
+      "timestamp": 1772190699407,
+      "value": 9,
+      "load1": 0,
+      "load5": 0,
+      "load15": 0
     }
   ],
   "memory": [
@@ -52,6 +59,12 @@
       "timestamp": 1772144503310,
       "value": 39.3,
       "used": 12.6,
+      "total": 31.9
+    },
+    {
+      "timestamp": 1772190699407,
+      "value": 35,
+      "used": 11.2,
       "total": 31.9
     }
   ],

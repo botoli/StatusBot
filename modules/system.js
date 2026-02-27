@@ -312,37 +312,6 @@ class SystemMonitor {
         return `${label}\n${bar} ${currentFormatted}${unit} / ${totalFormatted}${unit} (${percent.toFixed(1)}%)`;
     }
 
-    // ASCII график для истории (мини-график)
-    getMiniChart(data, height = 5, width = 20) {
-        if (!data || data.length === 0) return '';
-        
-        const max = Math.max(...data);
-        const min = Math.min(...data);
-        const range = max - min || 1;
-        
-        // Создаем сетку
-        const chart = Array(height).fill(null).map(() => Array(width).fill(' '));
-        
-        // Заполняем график
-        data.slice(-width).forEach((value, x) => {
-            const normalized = (value - min) / range;
-            const y = Math.floor(normalized * (height - 1));
-            const char = y === height - 1 ? '▁' : y === 0 ? '▔' : '█';
-            chart[height - 1 - y][x] = char;
-        });
-        
-        return chart.map(row => row.join('')).join('\n');
-    }
-
-    // Красивое форматирование метрики
-    formatMetric(label, value, unit, bar = null) {
-        let result = `${label} *${value}${unit}*`;
-        if (bar) {
-            result += `\n${bar}`;
-        }
-        return result;
-    }
-
     // Получить статус системы (красивый)
     getSystemStatus(metrics) {
         const lines = [];

@@ -201,24 +201,6 @@ class HistoryManager {
         };
     }
 
-    // Форматировать историю для вывода
-    formatHistoryStats(type, stats) {
-        if (!stats) return `Нет данных за последние ${stats.period}ч`;
-        
-        const emoji = {
-            cpu: '📊',
-            memory: '🧠',
-            disk: '💽',
-            temperature: '🌡️'
-        }[type] || '📋';
-
-        return `${emoji} *${type.toUpperCase()}* за ${stats.period}ч:\n` +
-               `📈 Макс: ${stats.max}%\n` +
-               `📉 Мин: ${stats.min}%\n` +
-               `📊 Среднее: ${stats.avg}%\n` +
-               `📐 Точек: ${stats.points}`;
-    }
-
     // Очистить старые данные (вызывать раз в день)
     async cleanup() {
         const history = await this.loadHistory();

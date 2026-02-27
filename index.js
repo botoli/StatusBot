@@ -68,14 +68,13 @@ function getMainKeyboard() {
         ['🧰 СЛУЖБЫ', '📈 ИСТОРИЯ'],
         ['🔔 АЛЕРТЫ', '⚙️ СИСТЕМА'],
         ['🌐 Измерить интернет', '📊 Система'],
-        ['🖥 СЕРВЕРЫ', '◀️ НАЗАД']
+        ['🖥 СЕРВЕРЫ']
     ]);
 }
 
 // Клавиатура статуса
 function getStatusKeyboard() {
     return createKeyboard([
-        ['🔄 Обновить', '🔴 LIVE'],
         ['◀️ НАЗАД']
     ]);
 }
@@ -83,8 +82,7 @@ function getStatusKeyboard() {
 // Клавиатура сети
 function getNetworkKeyboard() {
     return createKeyboard([
-        ['📊 Все интерфейсы', '🔍 Выбрать'],
-        ['⚡ Скорость'],
+        ['📊 Все интерфейсы', '⚡ Скорость'],
         ['◀️ НАЗАД']
     ]);
 }
@@ -113,8 +111,8 @@ function getAlertsKeyboard() {
 // Клавиатура системы
 function getSystemKeyboard() {
     return createKeyboard([
-        ['📊 Статус', '📋 Детали'],
-        ['📊 TOP', '⏱️ Uptime'],
+        ['📋 Детали'],
+        ['⏱️ Uptime'],
         ['◀️ НАЗАД']
     ]);
 }
@@ -154,31 +152,67 @@ async function safeEdit(ctx, text, buttons, parseMode = 'Markdown') {
     }
 }
 
-// Безопасное редактирование (для обратной совместимости с callback_query)
-async function safeEdit(ctx, text, buttons, parseMode = 'Markdown') {
-    try {
-        // Если это callback_query, редактируем сообщение
-        if (ctx.query) {
-            await ctx.bot.editMessageText(text, {
-                chat_id: ctx.chatId,
-                message_id: ctx.messageId,
-                parse_mode: parseMode,
-                reply_markup: { inline_keyboard: buttons }
-            });
-        } else {
-            // Если это обычное сообщение, отправляем новое с клавиатурой
-            await sendWithKeyboard(bot, ctx.chatId, text, getMainKeyboard(), parseMode);
-        }
-        return true;
-    } catch (error) {
-        if (error.code === 'ETELEGRAM' && error.response?.body?.description?.includes('message is not modified')) {
-            if (ctx.query) {
-                await ctx.bot.answerCallbackQuery(ctx.query.id, { text: '✅ Данные актуальны' });
-            }
-            return false;
-        }
-        throw error;
+// ============== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ СТАТУСА ==============
+
+const liveIntervals = {}; // Хранилище активных интервалов статуса
+
+function stopLive(chatId) {
+    if (liveIntervals[chatId]) {
+        clearInterval(liveIntervals[chatId]);
+        delete liveIntervals[chatId];
     }
+}
+
+function getStatusColor(percent) {
+    if (percent >= 80) return '🔴';
+    if (percent >= 50) return '🟡';
+    return '🟢';
+}
+
+function getBlockBar(percent, blocks = 10) {
+    const clamped = Math.max(0, Math.min(100, percent));
+    const filled = Math.round(clamped / 100 * blocks);
+    const empty = blocks - filled;
+    return '🟩'.repeat(filled) + '⬜'.repeat(empty);
+}
+
+function buildRealtimeStatusText(metrics) {
+    let text = `🖥️ ${os.hostname()}\n`;
+    text += '────────────\n\n';
+
+    const cpuPercent = parseFloat(metrics.cpu.current) || 0;
+    const ramPercent = parseFloat(metrics.memory.percent) || 0;
+    const diskPercent = metrics.disk ? parseInt(metrics.disk.percent) || 0 : null;
+
+    // CPU
+    text += `CPU  ${getStatusColor(cpuPercent)} ${cpuPercent.toFixed(0)}%\n`;
+    text += `${getBlockBar(cpuPercent)}\n\n`;
+
+    // RAM
+    text += `RAM  ${getStatusColor(ramPercent)} ${ramPercent.toFixed(0)}%\n`;
+    text += `${getBlockBar(ramPercent)}\n\n`;
+
+    // DISK
+    if (diskPercent !== null) {
+        text += `DISK ${getStatusColor(diskPercent)} ${diskPercent.toFixed(0)}%\n`;
+        text += `${getBlockBar(diskPercent)}\n\n`;
+    }
+
+    // Температура и аптайм
+    let tempStr = 'N/A';
+    if (metrics.temperature && metrics.temperature.cpu) {
+        tempStr = `${metrics.temperature.cpu.toFixed(0)}°C`;
+    }
+    text += `🌡️ ${tempStr}   ⏱️ ${metrics.uptime}\n`;
+
+    // Сеть
+    if (metrics.network) {
+        const rx = system.formatBytes(metrics.network.rxBytes);
+        const tx = system.formatBytes(metrics.network.txBytes);
+        text += `↓${rx} ↑${tx}`;
+    }
+
+    return text;
 }
 
 // Middleware
@@ -242,93 +276,31 @@ async function handleMainMenu(ctx) {
 
 // Статус
 async function handleStatus(ctx) {
+    // Останавливаем предыдущий live, если был
+    stopLive(ctx.chatId);
+
     const metrics = await system.getAllMetrics();
-    
-    // Используем красивый формат
-    const text = system.getSystemStatus(metrics);
-    
-    await sendWithKeyboard(bot, ctx.chatId, text, getStatusKeyboard());
-}
+    const text = buildRealtimeStatusText(metrics);
 
-// LIVE режим без графика
-const liveIntervals = {}; // Хранилище активных интервалов
+    const msg = await sendWithKeyboard(bot, ctx.chatId, text, getStatusKeyboard());
 
-async function handleLiveStatus(ctx) {
-    let count = 0;
-    
-    const liveMsg = await ctx.bot.sendMessage(ctx.chatId, "🔴 *LIVE режим*\nОбновление каждые 5 секунд", { parse_mode: 'Markdown' });
-    
     const interval = setInterval(async () => {
         try {
-            const metrics = await system.getAllMetrics();
-            
-            // Используем красивое отображение
-            let text = `🔴 *LIVE СТАТУС* (обновление 5с)\n`;
-            text += '═'.repeat(25) + '\n\n';
-            
-            const cpuPercent = parseFloat(metrics.cpu.current);
-            const ramPercent = parseFloat(metrics.memory.percent);
-            
-            text += `⚡ *CPU*\n${system.getLoadBar(cpuPercent)}\n\n`;
-            text += `🧠 *RAM*\n${system.getLoadBar(ramPercent)}\n`;
-            
-            if (metrics.temperature.cpu) {
-                const emoji = system.getTempEmoji(metrics.temperature.cpu);
-                text += `\n${emoji} *TEMP*: ${metrics.temperature.cpu.toFixed(1)}°C\n`;
-            }
-            
-            if (metrics.disk) {
-                const diskPercent = parseInt(metrics.disk.percent);
-                text += `\n💽 *DISK*\n${system.getLoadBar(diskPercent)}\n`;
-            }
-            
-            await ctx.bot.editMessageText(text, {
+            const m = await system.getAllMetrics();
+            const t = buildRealtimeStatusText(m);
+            await bot.editMessageText(t, {
                 chat_id: ctx.chatId,
-                message_id: liveMsg.message_id,
+                message_id: msg.message_id,
                 parse_mode: 'Markdown',
-                reply_markup: {
-                    inline_keyboard: [
-                        [{ text: "⏹️ Остановить", callback_data: "live_stop" }]
-                    ]
-                }
+                reply_markup: getStatusKeyboard().reply_markup
             });
-            
-            count++;
-            if (count >= 12) { // 60 секунд (12 * 5с)
-                clearInterval(interval);
-                delete liveIntervals[ctx.chatId];
-                await ctx.bot.editMessageText("⏹️ *LIVE режим завершён*", {
-                    chat_id: ctx.chatId,
-                    message_id: liveMsg.message_id,
-                    parse_mode: 'Markdown',
-                    reply_markup: {
-                        inline_keyboard: [
-                            [{ text: "📊 Вернуться к статусу", callback_data: "menu_status" }]
-                        ]
-                    }
-                });
-            }
         } catch (error) {
-            console.error('Ошибка в LIVE режиме:', error);
-            clearInterval(interval);
-            delete liveIntervals[ctx.chatId];
+            console.error('Ошибка в live-статусе:', error);
+            stopLive(ctx.chatId);
         }
-    }, 5000);
-    
+    }, 1000);
+
     liveIntervals[ctx.chatId] = interval;
-    if (ctx.query) {
-        await ctx.bot.answerCallbackQuery(ctx.query.id);
-    }
-}
-
-
-// Остановка live режима
-async function handleLiveStop(ctx) {
-    if (liveIntervals[ctx.chatId]) {
-        clearInterval(liveIntervals[ctx.chatId]);
-        delete liveIntervals[ctx.chatId];
-    }
-    await handleStatus(ctx);
 }
 
 // Службы
@@ -721,7 +693,7 @@ async function handleNetworkInterface(ctx, interfaceName) {
     // Создаем специальную клавиатуру для интерфейса
     const interfaceKeyboard = createKeyboard([
         ['⚡ Скорость'],
-        ['🔄 Обновить', '◀️ НАЗАД']
+        ['◀️ НАЗАД']
     ]);
     
     await sendWithKeyboard(bot, ctx.chatId, text, interfaceKeyboard);
@@ -866,13 +838,6 @@ async function handleSystemDetails(ctx) {
     await sendWithKeyboard(bot, ctx.chatId, text, getSystemKeyboard());
 }
 
-// TOP
-async function handleSystemTop(ctx) {
-    const { stdout } = await execPromise('top -bn1 | head -15');
-    const text = '📊 *TOP ПРОЦЕССОВ*\n```\n' + stdout + '\n```';
-    await sendWithKeyboard(bot, ctx.chatId, text, getSystemKeyboard(), 'Markdown');
-}
-
 // Uptime
 async function handleSystemUptime(ctx) {
     const metrics = await system.getAllMetrics();
@@ -894,10 +859,6 @@ const routeHandlers = {
     'menu_system': handleSystem,
     'menu_network': handleNetwork,
     
-    // LIVE
-    'live_status': handleLiveStatus,
-    'live_stop': handleLiveStop,
-    
     // Серверы
     'menu_servers': handleServers,
     
@@ -908,7 +869,6 @@ const routeHandlers = {
     
     // Система
     'system_details': handleSystemDetails,
-    'system_top': handleSystemTop,
     'system_uptime': handleSystemUptime,
     
     // Обновления
@@ -1027,17 +987,6 @@ bot.on('message', async (msg) => {
             return;
         }
         
-        // Статус
-        if (text === '🔄 Обновить') {
-            await handleStatus(ctx);
-            return;
-        }
-        
-        if (text === '🔴 LIVE' || text === '🔴 LIVE 5s') {
-            await handleLiveStatus(ctx);
-            return;
-        }
-        
         
         // История
         if (text === '🕐 24ч') {
@@ -1071,11 +1020,6 @@ bot.on('message', async (msg) => {
         // Система
         if (text === '📋 Детали') {
             await handleSystemDetails(ctx);
-            return;
-        }
-        
-        if (text === '📊 TOP') {
-            await handleSystemTop(ctx);
             return;
         }
         
