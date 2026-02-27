@@ -133,6 +133,26 @@ async function safeEdit(ctx, text, buttons, parseMode = 'Markdown') {
 
 const liveSessions = {}; // Хранилище активных live-сессий статуса { interval, messageId }
 
+// Остановка live-сессии для чата (статус/система)
+async function stopLiveSession(chatId, deleteMessage = false) {
+    const prev = liveSessions[chatId];
+    if (!prev) return;
+
+    if (prev.interval) {
+        clearInterval(prev.interval);
+    }
+
+    if (deleteMessage && prev.messageId) {
+        try {
+            await bot.deleteMessage(chatId, prev.messageId);
+        } catch (e) {
+            // Сообщение уже могло быть удалено — игнорируем ошибку
+        }
+    }
+
+    delete liveSessions[chatId];
+}
+
 function getStatusColor(percent) {
     if (percent >= 80) return '🔴';
     if (percent >= 50) return '🟡';
@@ -264,20 +284,7 @@ async function handleMainMenu(ctx) {
 // Статус
 async function handleStatus(ctx) {
     // Останавливаем предыдущий live, если был, и удаляем старое сообщение
-    const prev = liveSessions[ctx.chatId];
-    if (prev) {
-        if (prev.interval) {
-            clearInterval(prev.interval);
-        }
-        if (prev.messageId) {
-            try {
-                await bot.deleteMessage(ctx.chatId, prev.messageId);
-            } catch (e) {
-                // Игнорируем ошибки удаления (сообщение уже могло быть удалено)
-            }
-        }
-        delete liveSessions[ctx.chatId];
-    }
+    await stopLiveSession(ctx.chatId, true);
 
     const metrics = await system.getAllMetrics();
     const text = buildRealtimeStatusText(metrics);
@@ -466,6 +473,8 @@ async function handleLogs(ctx, serviceName, lines) {
 
 // История
 async function handleHistory(ctx) {
+    // При входе в раздел истории останавливаем live‑обновления
+    await stopLiveSession(ctx.chatId, true);
     const text = `📈 *ИСТОРИЯ*\n\nВыберите период:`;
     await sendWithKeyboard(bot, ctx.chatId, text, getHistoryKeyboard());
 }
@@ -558,6 +567,8 @@ async function handleHistPeriod(ctx, hours) {
 
 // Система
 async function handleSystem(ctx) {
+    // При входе в раздел системы останавливаем live‑обновления
+    await stopLiveSession(ctx.chatId, true);
     const text = `⚙️ *СИСТЕМА*\n\nВыберите действие:`;
     await sendWithKeyboard(bot, ctx.chatId, text, getSystemKeyboard());
 }
@@ -648,20 +659,7 @@ function buildSystemDetailsText(metrics, distro) {
 // Детали системы в live-режиме (обновление сообщения каждую секунду)
 async function handleSystemDetails(ctx) {
     // Останавливаем предыдущий live, если был, и удаляем старое сообщение
-    const prev = liveSessions[ctx.chatId];
-    if (prev) {
-        if (prev.interval) {
-            clearInterval(prev.interval);
-        }
-        if (prev.messageId) {
-            try {
-                await bot.deleteMessage(ctx.chatId, prev.messageId);
-            } catch (e) {
-                // Сообщение уже могло быть удалено — игнорируем ошибку
-            }
-        }
-        delete liveSessions[ctx.chatId];
-    }
+    await stopLiveSession(ctx.chatId, true);
 
     const metrics = await system.getAllMetrics();
     const distro = await system.getLinuxDistro();
@@ -705,6 +703,8 @@ async function handleSystemDetails(ctx) {
 
 // Uptime
 async function handleSystemUptime(ctx) {
+    // Дополнительно останавливаем live‑обновления, если они идут
+    await stopLiveSession(ctx.chatId, false);
     const metrics = await system.getAllMetrics();
     const text = `⏱️ *АПТАЙМ*: ${metrics.uptime}`;
     await sendWithKeyboard(bot, ctx.chatId, text, getSystemKeyboard());
@@ -823,6 +823,8 @@ bot.on('message', async (msg) => {
         
         // Навигация
         if (text === '◀️ НАЗАД' || text === '◀️ Назад' || text === 'Назад') {
+            // При возврате в главное меню останавливаем все live‑обновления
+            await stopLiveSession(ctx.chatId, true);
             await handleMainMenu(ctx);
             return;
         }
