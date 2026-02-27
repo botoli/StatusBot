@@ -550,11 +550,8 @@ async function handleSystem(ctx) {
     await sendWithKeyboard(bot, ctx.chatId, text, getSystemKeyboard());
 }
 
-// Детали системы
-async function handleSystemDetails(ctx) {
-    const metrics = await system.getAllMetrics();
-    const distro = await system.getLinuxDistro();
-    
+// Построение текста детальной системной информации
+function buildSystemDetailsText(metrics, distro) {
     let text = `📋 *ДЕТАЛЬНАЯ ИНФОРМАЦИЯ*\n`;
     text += '═'.repeat(30) + '\n\n';
     
@@ -633,8 +630,54 @@ async function handleSystemDetails(ctx) {
         text += `   ⬆️ TX: ${system.formatBytes(metrics.network.txBytes)} (${metrics.network.txPackets.toLocaleString()} пакетов)\n`;
         text += `   📊 Total: ${system.formatBytes(metrics.network.rxBytes + metrics.network.txBytes)}\n`;
     }
-    
-    await sendWithKeyboard(bot, ctx.chatId, text, getSystemKeyboard());
+    return text;
+}
+
+// Детали системы в live-режиме (обновление сообщения каждую секунду)
+async function handleSystemDetails(ctx) {
+    // Останавливаем предыдущий live, если был, и удаляем старое сообщение
+    const prev = liveSessions[ctx.chatId];
+    if (prev) {
+        if (prev.interval) {
+            clearInterval(prev.interval);
+        }
+        if (prev.messageId) {
+            try {
+                await bot.deleteMessage(ctx.chatId, prev.messageId);
+            } catch (e) {
+                // Сообщение уже могло быть удалено — игнорируем ошибку
+            }
+        }
+        delete liveSessions[ctx.chatId];
+    }
+
+    const metrics = await system.getAllMetrics();
+    const distro = await system.getLinuxDistro();
+    const text = buildSystemDetailsText(metrics, distro);
+
+    const msg = await sendWithKeyboard(bot, ctx.chatId, text, getSystemKeyboard());
+
+    const interval = setInterval(async () => {
+        try {
+            const m = await system.getAllMetrics();
+            const t = buildSystemDetailsText(m, distro);
+            await bot.editMessageText(t, {
+                chat_id: ctx.chatId,
+                message_id: msg.message_id,
+                parse_mode: 'Markdown',
+                reply_markup: getSystemKeyboard().reply_markup
+            });
+        } catch (error) {
+            console.error('Ошибка в live-системе:', error);
+            const session = liveSessions[ctx.chatId];
+            if (session && session.interval) {
+                clearInterval(session.interval);
+            }
+            delete liveSessions[ctx.chatId];
+        }
+    }, 1000);
+
+    liveSessions[ctx.chatId] = { interval, messageId: msg.message_id };
 }
 
 // Uptime
