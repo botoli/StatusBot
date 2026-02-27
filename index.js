@@ -783,7 +783,7 @@ async function handleSystemDetails(ctx) {
     text += `   Cores: ${os.cpus().length}\n`;
     text += '\n';
     
-    // RAM детально
+    // RAM детально!
     const ramPercent = parseFloat(metrics.memory.percent);
     text += `🧠 *RAM*\n`;
     text += system.getLoadBar(ramPercent) + '\n';
