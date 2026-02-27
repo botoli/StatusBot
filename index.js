@@ -295,6 +295,18 @@ async function handleStatus(ctx) {
                 parse_mode: 'Markdown'
             });
         } catch (error) {
+            // Если текст не изменился, Telegram возвращает ошибку "message is not modified".
+            // В этом случае не останавливаем live‑обновление.
+            if (
+                error.code === 'ETELEGRAM' &&
+                error.response &&
+                error.response.body &&
+                typeof error.response.body.description === 'string' &&
+                error.response.body.description.includes('message is not modified')
+            ) {
+                return;
+            }
+
             console.error('Ошибка в live-статусе:', error);
             const session = liveSessions[ctx.chatId];
             if (session && session.interval) {
@@ -668,6 +680,17 @@ async function handleSystemDetails(ctx) {
                 reply_markup: getSystemKeyboard().reply_markup
             });
         } catch (error) {
+            // Аналогично статусу — игнорируем "message is not modified"
+            if (
+                error.code === 'ETELEGRAM' &&
+                error.response &&
+                error.response.body &&
+                typeof error.response.body.description === 'string' &&
+                error.response.body.description.includes('message is not modified')
+            ) {
+                return;
+            }
+
             console.error('Ошибка в live-системе:', error);
             const session = liveSessions[ctx.chatId];
             if (session && session.interval) {
