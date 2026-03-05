@@ -218,31 +218,47 @@ class SystemMonitor {
 
     // Полный сбор метрик
     async getAllMetrics() {
+        // Синхронные метрики считаем сразу
         const cpu = this.getCPULoad();
         const mem = this.getMemoryInfo();
-        const disk = await this.getDiskInfo();
-        
+
+        // Все тяжёлые асинхронные операции запускаем параллельно,
+        // чтобы не ждать их по очереди
+        const [
+            disk,
+            [cpuTemp, gpuTemp, ssdTemp],
+            fans,
+            voltage,
+            mainInterface
+        ] = await Promise.all([
+            this.getDiskInfo(),
+            Promise.all([
+                this.getCPUTemperature(),
+                this.getGPUTemperature(),
+                this.getSSDTemperature()
+            ]),
+            this.getFanSpeeds(),
+            this.getVoltage(),
+            this.getMainInterface()
+        ]);
+
         const metrics = {
             timestamp: Date.now(),
-            cpu: cpu,
+            cpu,
             memory: mem,
-            disk: disk,
-            uptime: this.getUptime()
+            disk,
+            uptime: this.getUptime(),
+            temperature: {
+                cpu: cpuTemp,
+                gpu: gpuTemp,
+                ssd: ssdTemp
+            },
+            fans,
+            voltage
         };
-        
-        // Добавляем опциональные метрики
-        metrics.temperature = {
-            cpu: await this.getCPUTemperature(),
-            gpu: await this.getGPUTemperature(),
-            ssd: await this.getSSDTemperature()
-        };
-        
-        metrics.fans = await this.getFanSpeeds();
-        metrics.voltage = await this.getVoltage();
-        
-        // Добавляем сетевую статистику (основной интерфейс)
+
+        // Сетевую статистику также получаем, но не блокируемся на ошибках
         try {
-            const mainInterface = await this.getMainInterface();
             if (mainInterface) {
                 const networkStat = await this.getNetworkStats(mainInterface);
                 if (networkStat) {
@@ -258,7 +274,7 @@ class SystemMonitor {
         } catch (error) {
             // Игнорируем ошибки сети
         }
-        
+
         return metrics;
     }
 

@@ -337,21 +337,25 @@ async function handleStatus(ctx) {
 
 // Службы
 async function handleServices(ctx) {
-    const servicesList = [];
-    for (const s of config.SERVICES) {
-        const status = await services.getServiceStatus(s.systemName);
+    // Получаем статусы всех служб параллельно, чтобы не ждать каждую по очереди
+    const statuses = await Promise.all(
+        config.SERVICES.map(s => services.getServiceStatus(s.systemName))
+    );
+
+    const servicesList = config.SERVICES.map((s, index) => {
+        const status = statuses[index];
         let emoji = '⚪';
         if (status.status === 'active') emoji = '🟢';
         else if (status.status === 'failed') emoji = '🔴';
         else if (status.status === 'activating') emoji = '🟡';
         else emoji = '⚫';
-        
-        servicesList.push({
+
+        return {
             ...s,
             emoji,
             status: status.status
-        });
-    }
+        };
+    });
     
     let text = `🧰 *СЛУЖБЫ*\n\n🟢 active\n🟡 activating\n🔴 failed\n⚫ stopped\n\n`;
     servicesList.forEach(s => {
