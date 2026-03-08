@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"statusbot/internal/system"
+	"sync"
 	"time"
 )
 
@@ -61,14 +62,19 @@ type Stats struct {
 }
 
 type Manager struct {
-	dataFile  string
-	maxPoints int
+	dataFile   string
+	maxPoints  int
+	mu         sync.Mutex
+	mem        *HistoryData // in-memory cache
+	saveEvery  int          // сохранять на диск каждые N вызовов AddPoint
+	addCounter int
 }
 
 func NewManager(baseDir string) *Manager {
 	return &Manager{
 		dataFile:  filepath.Join(baseDir, "data", "history.json"),
 		maxPoints: 1000,
+		saveEvery: 6, // сохраняем каждые 6 точек (~30 мин при интервале 5 мин)
 	}
 }
 
@@ -76,7 +82,7 @@ func (m *Manager) ensureDir() error {
 	return os.MkdirAll(filepath.Dir(m.dataFile), 0755)
 }
 
-func (m *Manager) load() (*HistoryData, error) {
+func (m *Manager) loadFromFile() (*HistoryData, error) {
 	data, err := os.ReadFile(m.dataFile)
 	if err != nil {
 		return &HistoryData{
@@ -109,6 +115,20 @@ func (m *Manager) load() (*HistoryData, error) {
 	return &h, nil
 }
 
+func (m *Manager) load() (*HistoryData, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.mem != nil {
+		return m.mem, nil
+	}
+	h, err := m.loadFromFile()
+	if err != nil {
+		return nil, err
+	}
+	m.mem = h
+	return h, nil
+}
+
 func (m *Manager) save(h *HistoryData) error {
 	if err := m.ensureDir(); err != nil {
 		return err
@@ -139,10 +159,16 @@ func (m *Manager) trim(h *HistoryData) {
 }
 
 func (m *Manager) AddPoint(metrics *system.Metrics) error {
-	h, err := m.load()
-	if err != nil {
-		return err
+	m.mu.Lock()
+	if m.mem == nil {
+		h, err := m.loadFromFile()
+		if err != nil {
+			m.mu.Unlock()
+			return err
+		}
+		m.mem = h
 	}
+	h := m.mem
 	ts := metrics.Timestamp
 
 	cpuVal, _ := parseFloat(metrics.CPU.Current)
@@ -212,7 +238,20 @@ func (m *Manager) AddPoint(metrics *system.Metrics) error {
 	}
 
 	m.trim(h)
-	return m.save(h)
+	m.addCounter++
+	needSave := m.addCounter >= m.saveEvery
+	if needSave {
+		m.addCounter = 0
+	}
+	m.mu.Unlock()
+
+	if needSave {
+		m.mu.Lock()
+		cp := *m.mem
+		m.mu.Unlock()
+		return m.save(&cp)
+	}
+	return nil
 }
 
 func parseFloat(s string) (float64, error) {
@@ -224,39 +263,39 @@ func parseInt(s string) (int, error) {
 }
 
 func (m *Manager) getFiltered(typeKey string, hours int) ([]float64, int) {
-	h, err := m.load()
-	if err != nil {
-		return nil, 0
+	m.mu.Lock()
+	if m.mem == nil {
+		h, err := m.loadFromFile()
+		if err != nil {
+			m.mu.Unlock()
+			return nil, 0
+		}
+		m.mem = h
 	}
+	h := m.mem
 	cutoff := time.Now().UnixMilli() - int64(hours)*60*60*1000
 
+	var vals []float64
 	switch typeKey {
 	case "cpu":
-		var vals []float64
 		for _, p := range h.CPU {
 			if p.Timestamp >= cutoff {
 				vals = append(vals, p.Value)
 			}
 		}
-		return vals, len(vals)
 	case "memory":
-		var vals []float64
 		for _, p := range h.Memory {
 			if p.Timestamp >= cutoff {
 				vals = append(vals, p.Value)
 			}
 		}
-		return vals, len(vals)
 	case "disk":
-		var vals []float64
 		for _, p := range h.Disk {
 			if p.Timestamp >= cutoff {
 				vals = append(vals, float64(p.Value))
 			}
 		}
-		return vals, len(vals)
 	case "temperature":
-		var vals []float64
 		for _, p := range h.Temperature {
 			if p.Timestamp >= cutoff && p.Type == "cpu" {
 				vals = append(vals, p.Value)
@@ -269,10 +308,9 @@ func (m *Manager) getFiltered(typeKey string, hours int) ([]float64, int) {
 				}
 			}
 		}
-		return vals, len(vals)
-	default:
-		return nil, 0
 	}
+	m.mu.Unlock()
+	return vals, len(vals)
 }
 
 func (m *Manager) GetHistory(typeKey string, hours int) int {
@@ -306,10 +344,16 @@ func (m *Manager) GetStats(typeKey string, hours int) *Stats {
 }
 
 func (m *Manager) Cleanup() error {
-	h, err := m.load()
-	if err != nil {
-		return err
+	m.mu.Lock()
+	if m.mem == nil {
+		h, err := m.loadFromFile()
+		if err != nil {
+			m.mu.Unlock()
+			return err
+		}
+		m.mem = h
 	}
+	h := m.mem
 	weekAgo := time.Now().UnixMilli() - 7*24*60*60*1000
 	filter := func(ts int64) bool { return ts >= weekAgo }
 
@@ -352,6 +396,6 @@ func (m *Manager) Cleanup() error {
 		}
 	}
 	h.Network = newNet
-
+	m.mu.Unlock()
 	return m.save(h)
 }

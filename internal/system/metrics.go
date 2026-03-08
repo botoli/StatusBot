@@ -10,9 +10,19 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
+)
+
+var (
+	distroCache      string
+	mainIfaceCache   string
+	diskCache        *DiskInfo
+	diskCacheTime    int64
+	cacheMu          sync.RWMutex
+	diskCacheTTL     = int64(300) // 5 min в секундах
 )
 
 type CPULoad struct {
@@ -104,26 +114,20 @@ func GetLoadBar(percent float64, length int) string {
 		filled = 0
 	}
 	empty := length - filled
-	var bar strings.Builder
-	for i := 0; i < filled; i++ {
-		bar.WriteString("█")
-	}
-	for i := 0; i < empty; i++ {
-		bar.WriteString("░")
-	}
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", empty)
 	if percent >= 90 {
-		return fmt.Sprintf("🔴 %s %.1f%%", bar.String(), percent)
+		return fmt.Sprintf("🔴 %s %.1f%%", bar, percent)
 	}
 	if percent >= 80 {
-		return fmt.Sprintf("🟠 %s %.1f%%", bar.String(), percent)
+		return fmt.Sprintf("🟠 %s %.1f%%", bar, percent)
 	}
 	if percent >= 60 {
-		return fmt.Sprintf("🟡 %s %.1f%%", bar.String(), percent)
+		return fmt.Sprintf("🟡 %s %.1f%%", bar, percent)
 	}
 	if percent >= 40 {
-		return fmt.Sprintf("🟢 %s %.1f%%", bar.String(), percent)
+		return fmt.Sprintf("🟢 %s %.1f%%", bar, percent)
 	}
-	return fmt.Sprintf("⚪ %s %.1f%%", bar.String(), percent)
+	return fmt.Sprintf("⚪ %s %.1f%%", bar, percent)
 }
 
 func GetProgressBar(current, total float64, label, unit string, length int) string {
@@ -144,22 +148,40 @@ func GetProgressBar(current, total float64, label, unit string, length int) stri
 }
 
 func GetLinuxDistro() string {
+	cacheMu.RLock()
+	if distroCache != "" {
+		s := distroCache
+		cacheMu.RUnlock()
+		return s
+	}
+	cacheMu.RUnlock()
+
 	data, err := os.ReadFile("/etc/os-release")
 	if err != nil {
 		if out, err := exec.Command("lsb_release", "-d").Output(); err == nil {
 			re := regexp.MustCompile(`Description:\s*(.+)`)
 			if m := re.FindSubmatch(out); len(m) > 1 {
-				return strings.TrimSpace(string(m[1]))
+				r := strings.TrimSpace(string(m[1]))
+				cacheMu.Lock()
+				distroCache = r
+				cacheMu.Unlock()
+				return r
 			}
 		}
+		cacheMu.Lock()
+		distroCache = "Linux"
+		cacheMu.Unlock()
 		return "Linux"
 	}
 	lines := strings.Split(string(data), "\n")
 	for _, line := range lines {
 		if strings.HasPrefix(line, "PRETTY_NAME=") {
 			s := strings.TrimPrefix(line, "PRETTY_NAME=")
-			s = strings.Trim(s, "\"")
-			return strings.TrimSpace(s)
+			s = strings.Trim(strings.TrimSpace(s), "\"")
+			cacheMu.Lock()
+			distroCache = s
+			cacheMu.Unlock()
+			return s
 		}
 	}
 	var name, version string
@@ -170,10 +192,16 @@ func GetLinuxDistro() string {
 			version = strings.Trim(strings.TrimPrefix(line, "VERSION="), "\"")
 		}
 	}
+	var result string
 	if version != "" && !strings.Contains(name, version) {
-		return name + " " + version
+		result = name + " " + version
+	} else {
+		result = name
 	}
-	return name
+	cacheMu.Lock()
+	distroCache = result
+	cacheMu.Unlock()
+	return result
 }
 
 func getCPUTemperature() *float64 {
@@ -355,6 +383,15 @@ func GetMemoryInfo() MemoryInfo {
 }
 
 func GetDiskInfo() *DiskInfo {
+	now := time.Now().Unix()
+	cacheMu.RLock()
+	if diskCache != nil && now-diskCacheTime < diskCacheTTL {
+		d := diskCache
+		cacheMu.RUnlock()
+		return d
+	}
+	cacheMu.RUnlock()
+
 	cmd := exec.Command("df", "-h", "/")
 	out, err := cmd.Output()
 	if err != nil {
@@ -368,12 +405,17 @@ func GetDiskInfo() *DiskInfo {
 	if len(parts) < 5 {
 		return nil
 	}
-	return &DiskInfo{
+	d := &DiskInfo{
 		Total:   parts[1],
 		Used:    parts[2],
 		Free:    parts[3],
 		Percent: strings.TrimSuffix(parts[4], "%"),
 	}
+	cacheMu.Lock()
+	diskCache = d
+	diskCacheTime = now
+	cacheMu.Unlock()
+	return d
 }
 
 func GetUptime() string {
@@ -413,19 +455,34 @@ func GetNetworkInterfaces() []string {
 }
 
 func GetMainInterface() string {
+	cacheMu.RLock()
+	if mainIfaceCache != "" {
+		s := mainIfaceCache
+		cacheMu.RUnlock()
+		return s
+	}
+	cacheMu.RUnlock()
+
 	ifaces := GetNetworkInterfaces()
 	priority := []string{"eth0", "enp", "wlan0", "wlp"}
 	for _, p := range priority {
 		for _, iface := range ifaces {
 			if strings.HasPrefix(iface, p) || iface == p {
+				cacheMu.Lock()
+				mainIfaceCache = iface
+				cacheMu.Unlock()
 				return iface
 			}
 		}
 	}
+	var result string
 	if len(ifaces) > 0 {
-		return ifaces[0]
+		result = ifaces[0]
 	}
-	return ""
+	cacheMu.Lock()
+	mainIfaceCache = result
+	cacheMu.Unlock()
+	return result
 }
 
 func GetNetworkStats(iface string) *NetworkStats {
@@ -460,37 +517,43 @@ func GetNetworkStats(iface string) *NetworkStats {
 }
 
 func GetAllMetrics() (*Metrics, error) {
+	// Синхронные (быстрые /proc и syscall) — выполняем сразу
 	cpu := GetCPULoad()
 	mem := GetMemoryInfo()
-	disk := GetDiskInfo()
 	uptime := GetUptime()
 
-	cpuTemp := getCPUTemperature()
-	gpuTemp := getGPUTemperature()
-	ssdTemp := getSSDTemperature()
-	voltage := getVoltage()
+	// Асинхронные тяжёлые операции — параллельно
+	var disk *DiskInfo
+	var cpuTemp, gpuTemp, ssdTemp *float64
+	var voltage *string
+	var network *NetworkStats
 
-	metrics := &Metrics{
+	var wg sync.WaitGroup
+	wg.Add(5)
+	go func() { defer wg.Done(); disk = GetDiskInfo() }()
+	go func() { defer wg.Done(); cpuTemp = getCPUTemperature() }()
+	go func() { defer wg.Done(); gpuTemp = getGPUTemperature() }()
+	go func() { defer wg.Done(); ssdTemp = getSSDTemperature() }()
+	go func() { defer wg.Done(); voltage = getVoltage() }()
+
+	iface := GetMainInterface()
+	if iface != "" {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			network = GetNetworkStats(iface)
+		}()
+	}
+	wg.Wait()
+
+	return &Metrics{
 		Timestamp: time.Now().UnixMilli(),
 		CPU:       cpu,
 		Memory:    mem,
 		Disk:      disk,
 		Uptime:    uptime,
-		Temperature: TemperatureInfo{
-			CPU: cpuTemp,
-			GPU: gpuTemp,
-			SSD: ssdTemp,
-		},
-		Voltage: voltage,
-	}
-
-	iface := GetMainInterface()
-	if iface != "" {
-		stats := GetNetworkStats(iface)
-		if stats != nil {
-			metrics.Network = stats
-		}
-	}
-
-	return metrics, nil
+		Temperature: TemperatureInfo{CPU: cpuTemp, GPU: gpuTemp, SSD: ssdTemp},
+		Voltage:   voltage,
+		Network:   network,
+	}, nil
 }

@@ -19,28 +19,68 @@ type liveSession struct {
 	ticker    *time.Ticker
 	done      chan struct{}
 	messageID int
+	lastText  string // skip EditMessage if unchanged
 }
 
 type Bot struct {
-	api         *tgbotapi.BotAPI
-	cfg         *config.Config
-	history     *history.Manager
+	api          *tgbotapi.BotAPI
+	cfg          *config.Config
+	history      *history.Manager
 	liveSessions map[int64]*liveSession
-	mu          sync.Mutex
+	mu           sync.Mutex
+	// Cached keyboards — создаём один раз, переиспользуем
+	mainKb    tgbotapi.ReplyKeyboardMarkup
+	statusKb  tgbotapi.ReplyKeyboardMarkup
+	historyKb tgbotapi.ReplyKeyboardMarkup
+	systemKb  tgbotapi.ReplyKeyboardMarkup
 }
 
 func New(api *tgbotapi.BotAPI, cfg *config.Config, hist *history.Manager) *Bot {
-	return &Bot{
+	b := &Bot{
 		api:          api,
 		cfg:          cfg,
 		history:      hist,
 		liveSessions: make(map[int64]*liveSession),
 	}
+	b.initKeyboards()
+	return b
+}
+
+func (b *Bot) initKeyboards() {
+	b.mainKb = tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("📊 СТАТУС"),
+			tgbotapi.NewKeyboardButton("🧰 СЛУЖБЫ"),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("📈 ИСТОРИЯ"),
+			tgbotapi.NewKeyboardButton("⚙️ СИСТЕМА"),
+		),
+	)
+	b.statusKb = tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("◀️ НАЗАД")),
+	)
+	b.historyKb = tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("🕐 24ч"),
+			tgbotapi.NewKeyboardButton("🕑 48ч"),
+		),
+		tgbotapi.NewKeyboardButtonRow(
+			tgbotapi.NewKeyboardButton("📅 7д"),
+			tgbotapi.NewKeyboardButton("📅 30д"),
+		),
+		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("◀️ НАЗАД")),
+	)
+	b.systemKb = tgbotapi.NewReplyKeyboard(
+		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("📋 Детали")),
+		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("⏱️ Uptime")),
+		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("◀️ НАЗАД")),
+	)
 }
 
 func (b *Bot) Run() {
 	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
+	u.Timeout = 30 // быстрее получаем обновления
 	updates := b.api.GetUpdatesChan(u)
 
 	for update := range updates {
@@ -85,47 +125,6 @@ func (b *Bot) sendWithKeyboard(chatID int64, text string, keyboard interface{}) 
 		msg.ReplyMarkup = k
 	}
 	b.api.Send(msg)
-}
-
-func (b *Bot) mainKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	return tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("📊 СТАТУС"),
-			tgbotapi.NewKeyboardButton("🧰 СЛУЖБЫ"),
-		),
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("📈 ИСТОРИЯ"),
-			tgbotapi.NewKeyboardButton("⚙️ СИСТЕМА"),
-		),
-	)
-}
-
-func (b *Bot) statusKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	return tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("◀️ НАЗАД")),
-	)
-}
-
-func (b *Bot) historyKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	return tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("🕐 24ч"),
-			tgbotapi.NewKeyboardButton("🕑 48ч"),
-		),
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("📅 7д"),
-			tgbotapi.NewKeyboardButton("📅 30д"),
-		),
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("◀️ НАЗАД")),
-	)
-}
-
-func (b *Bot) systemKeyboard() tgbotapi.ReplyKeyboardMarkup {
-	return tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("📋 Детали")),
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("⏱️ Uptime")),
-		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("◀️ НАЗАД")),
-	)
 }
 
 func (b *Bot) stopLiveSession(chatID int64, deleteMsg bool) {
@@ -204,7 +203,7 @@ func (b *Bot) handleMainMenu(chatID int64, msg *tgbotapi.Message) {
 	text := "🖥 *Мониторинг сервера*\n\nВыберите раздел:"
 	msgOut := tgbotapi.NewMessage(chatID, text)
 	msgOut.ParseMode = "Markdown"
-	msgOut.ReplyMarkup = b.mainKeyboard()
+	msgOut.ReplyMarkup = b.mainKb
 	b.api.Send(msgOut)
 }
 
@@ -218,12 +217,12 @@ func (b *Bot) handleStatus(chatID int64) {
 	msg.ParseMode = "Markdown"
 	sent, _ := b.api.Send(msg)
 
-	b.sendWithKeyboard(chatID, "Для выхода из live‑режима нажмите кнопку ◀️ НАЗАД.", b.statusKeyboard())
+	b.sendWithKeyboard(chatID, "Для выхода из live‑режима нажмите кнопку ◀️ НАЗАД.", b.statusKb)
 
 	done := make(chan struct{})
 	ticker := time.NewTicker(time.Second)
 	b.mu.Lock()
-	b.liveSessions[chatID] = &liveSession{ticker: ticker, done: done, messageID: sent.MessageID}
+	b.liveSessions[chatID] = &liveSession{ticker: ticker, done: done, messageID: sent.MessageID, lastText: text}
 	b.mu.Unlock()
 
 	go func() {
@@ -238,13 +237,32 @@ func (b *Bot) handleStatus(chatID int64) {
 					continue
 				}
 				t := b.buildRealtimeStatusText(m)
+				b.mu.Lock()
+				sess := b.liveSessions[chatID]
+				b.mu.Unlock()
+				if sess == nil || t == sess.lastText {
+					continue // пропускаем API вызов если текст не изменился
+				}
 				edit := tgbotapi.NewEditMessageText(chatID, sent.MessageID, t)
 				edit.ParseMode = "Markdown"
 				_, err = b.api.Send(edit)
-				if err != nil && !strings.Contains(err.Error(), "message is not modified") {
-					// stop on real error
-					b.stopLiveSession(chatID, false)
-					return
+				if err != nil {
+					if strings.Contains(err.Error(), "message is not modified") {
+						b.mu.Lock()
+						if s := b.liveSessions[chatID]; s != nil {
+							s.lastText = t
+						}
+						b.mu.Unlock()
+					} else {
+						b.stopLiveSession(chatID, false)
+						return
+					}
+				} else {
+					b.mu.Lock()
+					if s := b.liveSessions[chatID]; s != nil {
+						s.lastText = t
+					}
+					b.mu.Unlock()
 				}
 			}
 		}
@@ -264,11 +282,11 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 		return
 	case "📈 ИСТОРИЯ", "📈 История":
 		b.stopLiveSession(chatID, true)
-		b.sendWithKeyboard(chatID, "📈 *ИСТОРИЯ*\n\nВыберите период:", b.historyKeyboard())
+		b.sendWithKeyboard(chatID, "📈 *ИСТОРИЯ*\n\nВыберите период:", b.historyKb)
 		return
 	case "⚙️ СИСТЕМА", "⚙️ Система":
 		b.stopLiveSession(chatID, true)
-		b.sendWithKeyboard(chatID, "⚙️ *СИСТЕМА*\n\nВыберите действие:", b.systemKeyboard())
+		b.sendWithKeyboard(chatID, "⚙️ *СИСТЕМА*\n\nВыберите действие:", b.systemKb)
 		return
 	case "◀️ НАЗАД", "◀️ Назад", "Назад":
 		b.stopLiveSession(chatID, true)
@@ -292,7 +310,7 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 	case "⏱️ Uptime":
 		b.stopLiveSession(chatID, false)
 		metrics, _ := system.GetAllMetrics()
-		b.sendWithKeyboard(chatID, "⏱️ *АПТАЙМ*: "+metrics.Uptime, b.systemKeyboard())
+		b.sendWithKeyboard(chatID, "⏱️ *АПТАЙМ*: "+metrics.Uptime, b.systemKb)
 		return
 	case "🔄 Обновить все":
 		b.handleServices(chatID, 0)
@@ -381,11 +399,17 @@ func (b *Bot) handleCallback(query *tgbotapi.CallbackQuery) {
 }
 
 func (b *Bot) handleServices(chatID int64, editMsgID int) {
-	var statuses []*services.ServiceStatus
-	for _, s := range b.cfg.Services {
-		st, _ := services.GetServiceStatus(s.SystemName)
-		statuses = append(statuses, st)
+	statuses := make([]*services.ServiceStatus, len(b.cfg.Services))
+	var wg sync.WaitGroup
+	for i, s := range b.cfg.Services {
+		wg.Add(1)
+		go func(idx int, sysName string) {
+			defer wg.Done()
+			st, _ := services.GetServiceStatus(sysName)
+			statuses[idx] = st
+		}(i, s.SystemName)
 	}
+	wg.Wait()
 
 	var sb strings.Builder
 	sb.WriteString("🧰 *СЛУЖБЫ*\n\n🟢 active\n🟡 activating\n🔴 failed\n⚫ stopped\n\n")
@@ -590,7 +614,7 @@ func (b *Bot) handleHistPeriod(chatID int64, hours int) {
 		sb.WriteString(fmt.Sprintf("⚠️ *Нет данных за последние %dч*\nПопробуйте выбрать другой период.", hours))
 	}
 
-	b.sendWithKeyboard(chatID, sb.String(), b.historyKeyboard())
+	b.sendWithKeyboard(chatID, sb.String(), b.historyKb)
 }
 
 func (b *Bot) buildSystemDetailsText(metrics *system.Metrics, distro string) string {
@@ -655,13 +679,13 @@ func (b *Bot) handleSystemDetails(chatID int64) {
 
 	msg := tgbotapi.NewMessage(chatID, text)
 	msg.ParseMode = "Markdown"
-	msg.ReplyMarkup = b.systemKeyboard()
+	msg.ReplyMarkup = b.systemKb
 	sent, _ := b.api.Send(msg)
 
 	done := make(chan struct{})
 	ticker := time.NewTicker(time.Second)
 	b.mu.Lock()
-	b.liveSessions[chatID] = &liveSession{ticker: ticker, done: done, messageID: sent.MessageID}
+	b.liveSessions[chatID] = &liveSession{ticker: ticker, done: done, messageID: sent.MessageID, lastText: text}
 	b.mu.Unlock()
 
 	go func() {
@@ -676,13 +700,27 @@ func (b *Bot) handleSystemDetails(chatID int64) {
 					continue
 				}
 				t := b.buildSystemDetailsText(m, distro)
+				b.mu.Lock()
+				sess := b.liveSessions[chatID]
+				b.mu.Unlock()
+				if sess == nil || t == sess.lastText {
+					continue
+				}
 				edit := tgbotapi.NewEditMessageText(chatID, sent.MessageID, t)
 				edit.ParseMode = "Markdown"
 				edit.ReplyMarkup = &tgbotapi.InlineKeyboardMarkup{}
 				_, err = b.api.Send(edit)
-				if err != nil && !strings.Contains(err.Error(), "message is not modified") {
-					b.stopLiveSession(chatID, false)
-					return
+				if err != nil {
+					if !strings.Contains(err.Error(), "message is not modified") {
+						b.stopLiveSession(chatID, false)
+						return
+					}
+				} else {
+					b.mu.Lock()
+					if s := b.liveSessions[chatID]; s != nil {
+						s.lastText = t
+					}
+					b.mu.Unlock()
 				}
 			}
 		}
