@@ -1,0 +1,24 @@
+{
+  "telegram_token": "YOUR_BOT_TOKEN",
+  "admin_id": 123456789,
+  "thresholds": {
+    "cpu": 80,
+    "ram": 85,
+    "disk": 90,
+    "temp_cpu": 80,
+    "temp_gpu": 80,
+    "temp_ssd": 65,
+    "network_speed": 104857600
+  },
+  "intervals": {
+    "check": 60000,
+    "history": 300000,
+    "alert_cooldown": 1800000,
+    "cleanup": 86400000
+  },
+  "services": [
+    {"name": "📁 File Browser", "system_name": "filebrowser"},
+    {"name": "🌐 Nginx", "system_name": "nginx"},
+    {"name": "🐳 Docker", "system_name": "docker"}
+  ]
+}
