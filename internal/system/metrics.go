@@ -5,6 +5,7 @@ package system
 import (
 	"bufio"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"regexp"
@@ -556,4 +557,21 @@ func GetAllMetrics() (*Metrics, error) {
 		Voltage:   voltage,
 		Network:   network,
 	}, nil
+}
+
+// CheckHAProxy checks HAProxy stats endpoint availability on localhost.
+// Returns "running" if TCP/HTTP connection succeeds (even if auth is required),
+// otherwise returns "stopped".
+func CheckHAProxy() string {
+	client := &http.Client{Timeout: 2 * time.Second}
+	req, err := http.NewRequest(http.MethodGet, "http://localhost:8404/stats", nil)
+	if err != nil {
+		return "stopped"
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "stopped"
+	}
+	_ = resp.Body.Close()
+	return "running"
 }

@@ -173,3 +173,7 @@ func GetAllMetrics() (*Metrics, error) {
 		Temperature: TemperatureInfo{},
 	}, nil
 }
+
+func CheckHAProxy() string {
+	return "stopped"
+}

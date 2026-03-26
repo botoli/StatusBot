@@ -90,9 +90,7 @@ func (b *Bot) Run() {
 				continue
 			}
 			if update.Message.Text != "" && strings.HasPrefix(update.Message.Text, "/") {
-				if strings.HasPrefix(update.Message.Text, "/start") {
-					b.handleMainMenu(update.Message.Chat.ID, nil)
-				}
+				b.handleSlashCommand(update.Message)
 				continue
 			}
 			if update.Message.Text != "" {
@@ -196,6 +194,37 @@ func (b *Bot) buildRealtimeStatusText(metrics *system.Metrics) string {
 	if metrics.Network != nil {
 		sb.WriteString(fmt.Sprintf("↓%s ↑%s", system.FormatBytes(metrics.Network.RxBytes), system.FormatBytes(metrics.Network.TxBytes)))
 	}
+	sb.WriteString("\n\n")
+
+	// Cluster section
+	sb.WriteString("*🤖 КЛАСТЕР*\n")
+	haproxyEmoji := "🔴"
+	if system.CheckHAProxy() == "running" {
+		haproxyEmoji = "🟢"
+	}
+	sb.WriteString(fmt.Sprintf("   %s HAProxy: статус\n", haproxyEmoji))
+
+	backendStatus := services.GetBackendStatus()
+	type beLine struct {
+		unit string
+		port int
+		name string
+	}
+	backends := []beLine{
+		{unit: "backend-1", port: 3001, name: "Backend-1"},
+		{unit: "backend-2", port: 3002, name: "Backend-2"},
+		{unit: "backend-3", port: 3003, name: "Backend-3"},
+	}
+	for _, be := range backends {
+		st := strings.TrimSpace(backendStatus[be.unit])
+		emoji := "🔴"
+		if st == "active" {
+			emoji = "🟢"
+		} else if st == "" || st == "unknown" {
+			emoji = "🔴"
+		}
+		sb.WriteString(fmt.Sprintf("   %s %s: порт %d\n", emoji, be.name, be.port))
+	}
 	return sb.String()
 }
 
@@ -215,6 +244,11 @@ func (b *Bot) handleStatus(chatID int64) {
 
 	msg := tgbotapi.NewMessage(chatID, text)
 	msg.ParseMode = "Markdown"
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonURL("📊 HAProxy Stats", "http://95.165.29.213:8404/stats"),
+		),
+	)
 	sent, _ := b.api.Send(msg)
 
 	b.sendWithKeyboard(chatID, "Для выхода из live‑режима нажмите кнопку ◀️ НАЗАД.", b.statusKb)
@@ -245,6 +279,11 @@ func (b *Bot) handleStatus(chatID int64) {
 				}
 				edit := tgbotapi.NewEditMessageText(chatID, sent.MessageID, t)
 				edit.ParseMode = "Markdown"
+				edit.ReplyMarkup = &tgbotapi.InlineKeyboardMarkup{InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonURL("📊 HAProxy Stats", "http://95.165.29.213:8404/stats"),
+					),
+				}}
 				_, err = b.api.Send(edit)
 				if err != nil {
 					if strings.Contains(err.Error(), "message is not modified") {
@@ -345,6 +384,36 @@ func (b *Bot) handleCallback(query *tgbotapi.CallbackQuery) {
 		b.api.Request(tgbotapi.NewCallback(query.ID, ""))
 		b.handleServices(chatID, msgID)
 		return
+	case "backend_status":
+		b.api.Request(tgbotapi.NewCallback(query.ID, ""))
+		b.handleBackendStatus(chatID, msgID)
+		return
+	case "backend_restartall":
+		b.api.Request(tgbotapi.NewCallback(query.ID, "⏳ Перезапускаю все бэкенды..."))
+		b.handleBackendRestartAll(chatID, msgID)
+		return
+	}
+
+	if strings.HasPrefix(data, "backend_log_") {
+		unit := strings.TrimPrefix(data, "backend_log_")
+		b.api.Request(tgbotapi.NewCallback(query.ID, "⏳ Загружаю логи..."))
+		b.handleBackendLog(chatID, unit, 20)
+		b.api.Request(tgbotapi.NewCallback(query.ID, ""))
+		return
+	}
+
+	if strings.HasPrefix(data, "backend_action_") {
+		// backend_action_<start|stop|restart>_<backend-1>
+		parts := strings.SplitN(strings.TrimPrefix(data, "backend_action_"), "_", 2)
+		if len(parts) == 2 {
+			action := parts[0]
+			unit := parts[1]
+			b.api.Request(tgbotapi.NewCallback(query.ID, "⏳ Выполняю "+action+"..."))
+			b.handleBackendAction(chatID, action, unit)
+			b.handleBackendStatus(chatID, msgID)
+			b.api.Request(tgbotapi.NewCallback(query.ID, ""))
+			return
+		}
 	}
 
 	if strings.HasPrefix(data, "hist_") {
@@ -414,7 +483,56 @@ func (b *Bot) handleServices(chatID int64, editMsgID int) {
 	var sb strings.Builder
 	sb.WriteString("🧰 *СЛУЖБЫ*\n\n🟢 active\n🟡 activating\n🔴 failed\n⚫ stopped\n\n")
 	rows := [][]tgbotapi.InlineKeyboardButton{}
+
+	backendStatus := services.GetBackendStatus()
+	appendBackendRows := func() {
+		type backendLine struct {
+			unit  string
+			port  int
+			index int
+		}
+		lines := []backendLine{
+			{unit: "backend-1", port: 3001, index: 1},
+			{unit: "backend-2", port: 3002, index: 2},
+			{unit: "backend-3", port: 3003, index: 3},
+		}
+		for _, ln := range lines {
+			st := strings.TrimSpace(backendStatus[ln.unit])
+			emoji := "⚫"
+			switch st {
+			case "active":
+				emoji = "🟢"
+			case "inactive", "failed":
+				emoji = "🔴"
+			default:
+				emoji = "⚫"
+			}
+			label := fmt.Sprintf("%s Backend-%d (порт %d)", emoji, ln.index, ln.port)
+			sb.WriteString(label + "\n")
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(label, "backend_status"),
+			))
+		}
+	}
+	isBackendService := func(s config.Service) bool {
+		sysName := strings.ToLower(strings.TrimSpace(s.SystemName))
+		if sysName == "backend" {
+			return true
+		}
+		name := strings.ToLower(s.Name)
+		return strings.Contains(name, "backend") && sysName == "backend"
+	}
+
+	insertedBackends := false
 	for i, s := range b.cfg.Services {
+		if isBackendService(s) {
+			if !insertedBackends {
+				appendBackendRows()
+				insertedBackends = true
+			}
+			continue
+		}
+
 		st := statuses[i]
 		emoji := "⚪"
 		switch st.Status {
@@ -432,9 +550,16 @@ func (b *Bot) handleServices(chatID int64, editMsgID int) {
 			tgbotapi.NewInlineKeyboardButtonData(emoji+" "+s.Name, "service_"+s.SystemName),
 		))
 	}
+	if !insertedBackends {
+		appendBackendRows()
+	}
+
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 		tgbotapi.NewInlineKeyboardButtonData("🔄 Обновить все", "services_refresh"),
 		tgbotapi.NewInlineKeyboardButtonData("◀️ Назад", "back_main"),
+	))
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("🔄 Restart All Backends", "backend_restartall"),
 	))
 
 	if editMsgID > 0 {
