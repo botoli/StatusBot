@@ -8,20 +8,20 @@ import (
 )
 
 type Thresholds struct {
-	CPU         int   `json:"cpu"`
-	RAM         int   `json:"ram"`
-	Disk        int   `json:"disk"`
-	TEMP_CPU    int   `json:"temp_cpu"`
-	TEMP_GPU    int   `json:"temp_gpu"`
-	TEMP_SSD    int   `json:"temp_ssd"`
+	CPU          int   `json:"cpu"`
+	RAM          int   `json:"ram"`
+	Disk         int   `json:"disk"`
+	TEMP_CPU     int   `json:"temp_cpu"`
+	TEMP_GPU     int   `json:"temp_gpu"`
+	TEMP_SSD     int   `json:"temp_ssd"`
 	NetworkSpeed int64 `json:"network_speed"` // bytes/s
 }
 
 type Intervals struct {
-	Check        int64 `json:"check"`         // ms
-	History      int64 `json:"history"`       // ms
+	Check         int64 `json:"check"`          // ms
+	History       int64 `json:"history"`        // ms
 	AlertCooldown int64 `json:"alert_cooldown"` // ms
-	Cleanup      int64 `json:"cleanup"`       // ms
+	Cleanup       int64 `json:"cleanup"`        // ms
 }
 
 type Service struct {
@@ -29,12 +29,21 @@ type Service struct {
 	SystemName string `json:"system_name"`
 }
 
+type CheckTarget struct {
+	Name           string `json:"name"`
+	Type           string `json:"type"` // tcp|http
+	Target         string `json:"target"`
+	TimeoutMS      int    `json:"timeout_ms"`
+	RestartService string `json:"restart_service,omitempty"`
+}
+
 type Config struct {
-	TelegramToken string      `json:"telegram_token"`
-	AdminID       int64       `json:"admin_id"`
-	Thresholds    Thresholds  `json:"thresholds"`
-	Intervals     Intervals   `json:"intervals"`
-	Services      []Service   `json:"services"`
+	TelegramToken string        `json:"telegram_token"`
+	AdminID       int64         `json:"admin_id"`
+	Thresholds    Thresholds    `json:"thresholds"`
+	Intervals     Intervals     `json:"intervals"`
+	Services      []Service     `json:"services"`
+	Checks        []CheckTarget `json:"checks"`
 }
 
 var DefaultConfig = Config{
@@ -50,10 +59,10 @@ var DefaultConfig = Config{
 		NetworkSpeed: 100 * 1024 * 1024, // 100 MB/s
 	},
 	Intervals: Intervals{
-		Check:        60 * 1000,
-		History:      5 * 60 * 1000,
+		Check:         60 * 1000,
+		History:       5 * 60 * 1000,
 		AlertCooldown: 30 * 60 * 1000,
-		Cleanup:      24 * 60 * 60 * 1000,
+		Cleanup:       24 * 60 * 60 * 1000,
 	},
 	Services: []Service{
 		{Name: "📁 File Browser", SystemName: "filebrowser"},
@@ -63,6 +72,7 @@ var DefaultConfig = Config{
 		{Name: "🐳 Docker", SystemName: "docker"},
 		{Name: "☁️ Cloudflared", SystemName: "cloudflared"},
 	},
+	Checks: []CheckTarget{},
 }
 
 func Load(baseDir string) (*Config, error) {
@@ -71,18 +81,19 @@ func Load(baseDir string) (*Config, error) {
 
 	if data, err := os.ReadFile(configPath); err == nil {
 		var fileCfg struct {
-			TelegramToken    *string     `json:"telegram_token"`
-			TelegramTokenLegacy *string `json:"TELEGRAM_TOKEN"`
-			AdminID          *int64      `json:"admin_id"`
-			AdminIDLegacy    *int64      `json:"ADMIN_ID"`
-			Thresholds       *Thresholds `json:"thresholds"`
-			ThresholdsLegacy *struct {
-				CPU int `json:"CPU"`
-				RAM int `json:"RAM"`
+			TelegramToken       *string     `json:"telegram_token"`
+			TelegramTokenLegacy *string     `json:"TELEGRAM_TOKEN"`
+			AdminID             *int64      `json:"admin_id"`
+			AdminIDLegacy       *int64      `json:"ADMIN_ID"`
+			Thresholds          *Thresholds `json:"thresholds"`
+			ThresholdsLegacy    *struct {
+				CPU  int `json:"CPU"`
+				RAM  int `json:"RAM"`
 				Disk int `json:"DISK"`
 			} `json:"THRESHOLDS"`
-			Intervals  *Intervals `json:"intervals"`
-			Services   []Service  `json:"services"`
+			Intervals *Intervals    `json:"intervals"`
+			Services  []Service     `json:"services"`
+			Checks    []CheckTarget `json:"checks"`
 		}
 		if err := json.Unmarshal(data, &fileCfg); err == nil {
 			if fileCfg.TelegramToken != nil {
@@ -150,6 +161,9 @@ func Load(baseDir string) (*Config, error) {
 			}
 			if len(fileCfg.Services) > 0 {
 				cfg.Services = fileCfg.Services
+			}
+			if len(fileCfg.Checks) > 0 {
+				cfg.Checks = fileCfg.Checks
 			}
 		}
 	}

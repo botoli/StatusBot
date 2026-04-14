@@ -18,12 +18,12 @@ import (
 )
 
 var (
-	distroCache      string
-	mainIfaceCache   string
-	diskCache        *DiskInfo
-	diskCacheTime    int64
-	cacheMu          sync.RWMutex
-	diskCacheTTL     = int64(300) // 5 min в секундах
+	distroCache    string
+	mainIfaceCache string
+	diskCache      *DiskInfo
+	diskCacheTime  int64
+	cacheMu        sync.RWMutex
+	diskCacheTTL   = int64(300) // 5 min в секундах
 )
 
 type CPULoad struct {
@@ -448,6 +448,9 @@ func GetNetworkInterfaces() []string {
 	var ifaces []string
 	for _, name := range strings.Split(string(out), "\n") {
 		name = strings.TrimSpace(name)
+		if idx := strings.Index(name, "@"); idx > 0 {
+			name = name[:idx]
+		}
 		if name != "" && name != "lo" && !strings.Contains(name, "lo") {
 			ifaces = append(ifaces, name)
 		}
@@ -455,7 +458,36 @@ func GetNetworkInterfaces() []string {
 	return ifaces
 }
 
+func getDefaultRouteInterface() string {
+	data, err := os.ReadFile("/proc/net/route")
+	if err != nil {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	for i, line := range lines {
+		if i == 0 || strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		// Destination 00000000 means default route.
+		if parts[1] == "00000000" && parts[0] != "lo" {
+			return parts[0]
+		}
+	}
+	return ""
+}
+
 func GetMainInterface() string {
+	if defaultIface := getDefaultRouteInterface(); defaultIface != "" {
+		cacheMu.Lock()
+		mainIfaceCache = defaultIface
+		cacheMu.Unlock()
+		return defaultIface
+	}
+
 	cacheMu.RLock()
 	if mainIfaceCache != "" {
 		s := mainIfaceCache
@@ -493,12 +525,19 @@ func GetNetworkStats(iface string) *NetworkStats {
 	}
 	scanner := bufio.NewScanner(strings.NewReader(string(data)))
 	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.Contains(line, iface+":") {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || !strings.Contains(line, ":") {
 			continue
 		}
-		line = strings.TrimPrefix(line, iface+":")
-		parts := strings.Fields(line)
+		chunks := strings.SplitN(line, ":", 2)
+		if len(chunks) != 2 {
+			continue
+		}
+		ifName := strings.TrimSpace(chunks[0])
+		if ifName != iface {
+			continue
+		}
+		parts := strings.Fields(chunks[1])
 		if len(parts) < 10 {
 			return nil
 		}
@@ -548,14 +587,14 @@ func GetAllMetrics() (*Metrics, error) {
 	wg.Wait()
 
 	return &Metrics{
-		Timestamp: time.Now().UnixMilli(),
-		CPU:       cpu,
-		Memory:    mem,
-		Disk:      disk,
-		Uptime:    uptime,
+		Timestamp:   time.Now().UnixMilli(),
+		CPU:         cpu,
+		Memory:      mem,
+		Disk:        disk,
+		Uptime:      uptime,
 		Temperature: TemperatureInfo{CPU: cpuTemp, GPU: gpuTemp, SSD: ssdTemp},
-		Voltage:   voltage,
-		Network:   network,
+		Voltage:     voltage,
+		Network:     network,
 	}, nil
 }
 

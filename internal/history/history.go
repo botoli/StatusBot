@@ -4,18 +4,18 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strconv"
 	"statusbot/internal/system"
+	"strconv"
 	"sync"
 	"time"
 )
 
 type HistoryData struct {
-	CPU         []HistoryPoint   `json:"cpu"`
-	Memory      []MemoryPoint    `json:"memory"`
-	Disk        []DiskPoint      `json:"disk"`
-	Temperature []TempPoint      `json:"temperature"`
-	Network     []NetworkPoint   `json:"network"`
+	CPU         []HistoryPoint `json:"cpu"`
+	Memory      []MemoryPoint  `json:"memory"`
+	Disk        []DiskPoint    `json:"disk"`
+	Temperature []TempPoint    `json:"temperature"`
+	Network     []NetworkPoint `json:"network"`
 }
 
 type HistoryPoint struct {
@@ -57,9 +57,18 @@ type Stats struct {
 	Min    string
 	Max    string
 	Avg    string
+	MinAt  string
+	MaxAt  string
 	Points int
 	Period int
 }
+
+type statPoint struct {
+	value float64
+	ts    int64
+}
+
+const historyRetentionDays int64 = 35
 
 type Manager struct {
 	dataFile   string
@@ -73,7 +82,7 @@ type Manager struct {
 func NewManager(baseDir string) *Manager {
 	return &Manager{
 		dataFile:  filepath.Join(baseDir, "data", "history.json"),
-		maxPoints: 1000,
+		maxPoints: 50000,
 		saveEvery: 6, // сохраняем каждые 6 точек (~30 мин при интервале 5 мин)
 	}
 }
@@ -262,85 +271,97 @@ func parseInt(s string) (int, error) {
 	return strconv.Atoi(s)
 }
 
-func (m *Manager) getFiltered(typeKey string, hours int) ([]float64, int) {
+func (m *Manager) getFilteredPoints(typeKey string, hours int) []statPoint {
 	m.mu.Lock()
 	if m.mem == nil {
 		h, err := m.loadFromFile()
 		if err != nil {
 			m.mu.Unlock()
-			return nil, 0
+			return nil
 		}
 		m.mem = h
 	}
 	h := m.mem
 	cutoff := time.Now().UnixMilli() - int64(hours)*60*60*1000
 
-	var vals []float64
+	var points []statPoint
 	switch typeKey {
 	case "cpu":
 		for _, p := range h.CPU {
 			if p.Timestamp >= cutoff {
-				vals = append(vals, p.Value)
+				points = append(points, statPoint{value: p.Value, ts: p.Timestamp})
 			}
 		}
 	case "memory":
 		for _, p := range h.Memory {
 			if p.Timestamp >= cutoff {
-				vals = append(vals, p.Value)
+				points = append(points, statPoint{value: p.Value, ts: p.Timestamp})
 			}
 		}
 	case "disk":
 		for _, p := range h.Disk {
 			if p.Timestamp >= cutoff {
-				vals = append(vals, float64(p.Value))
+				points = append(points, statPoint{value: float64(p.Value), ts: p.Timestamp})
 			}
 		}
 	case "temperature":
 		for _, p := range h.Temperature {
 			if p.Timestamp >= cutoff && p.Type == "cpu" {
-				vals = append(vals, p.Value)
+				points = append(points, statPoint{value: p.Value, ts: p.Timestamp})
 			}
 		}
-		if len(vals) == 0 {
+		if len(points) == 0 {
 			for _, p := range h.Temperature {
 				if p.Timestamp >= cutoff {
-					vals = append(vals, p.Value)
+					points = append(points, statPoint{value: p.Value, ts: p.Timestamp})
 				}
 			}
 		}
 	}
 	m.mu.Unlock()
-	return vals, len(vals)
+	return points
 }
 
 func (m *Manager) GetHistory(typeKey string, hours int) int {
-	_, count := m.getFiltered(typeKey, hours)
-	return count
+	return len(m.getFilteredPoints(typeKey, hours))
 }
 
 func (m *Manager) GetStats(typeKey string, hours int) *Stats {
-	vals, _ := m.getFiltered(typeKey, hours)
-	if len(vals) == 0 {
+	points := m.getFilteredPoints(typeKey, hours)
+	if len(points) == 0 {
 		return nil
 	}
-	min, max, sum := vals[0], vals[0], 0.0
-	for _, v := range vals {
-		if v < min {
-			min = v
+	minVal, maxVal := points[0].value, points[0].value
+	minTS, maxTS := points[0].ts, points[0].ts
+	sum := 0.0
+	for _, p := range points {
+		if p.value < minVal {
+			minVal = p.value
+			minTS = p.ts
 		}
-		if v > max {
-			max = v
+		if p.value > maxVal {
+			maxVal = p.value
+			maxTS = p.ts
 		}
-		sum += v
+		sum += p.value
 	}
-	avg := sum / float64(len(vals))
+	avg := sum / float64(len(points))
 	return &Stats{
-		Min:    strconv.FormatFloat(min, 'f', 1, 64),
-		Max:    strconv.FormatFloat(max, 'f', 1, 64),
+		Min:    strconv.FormatFloat(minVal, 'f', 1, 64),
+		Max:    strconv.FormatFloat(maxVal, 'f', 1, 64),
 		Avg:    strconv.FormatFloat(avg, 'f', 1, 64),
-		Points: len(vals),
+		MinAt:  formatHistoryTime(minTS),
+		MaxAt:  formatHistoryTime(maxTS),
+		Points: len(points),
 		Period: hours,
 	}
+}
+
+func formatHistoryTime(ts int64) string {
+	if ts <= 0 {
+		return ""
+	}
+	return time.UnixMilli(ts).Format("02.01.2006 15:04")
 }
 
 func (m *Manager) Cleanup() error {
@@ -354,8 +375,8 @@ func (m *Manager) Cleanup() error {
 		m.mem = h
 	}
 	h := m.mem
-	weekAgo := time.Now().UnixMilli() - 7*24*60*60*1000
-	filter := func(ts int64) bool { return ts >= weekAgo }
+	retentionCutoff := time.Now().UnixMilli() - historyRetentionDays*24*60*60*1000
+	filter := func(ts int64) bool { return ts >= retentionCutoff }
 
 	var newCPU []HistoryPoint
 	for _, p := range h.CPU {

@@ -8,11 +8,12 @@ import (
 	"sync"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"statusbot/internal/config"
 	"statusbot/internal/history"
 	"statusbot/internal/services"
 	"statusbot/internal/system"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 type liveSession struct {
@@ -28,6 +29,9 @@ type Bot struct {
 	history      *history.Manager
 	liveSessions map[int64]*liveSession
 	mu           sync.Mutex
+	alertCtrl    AlertController
+	netMu        sync.Mutex
+	netSamples   map[string]netSample
 	// Cached keyboards — создаём один раз, переиспользуем
 	mainKb    tgbotapi.ReplyKeyboardMarkup
 	statusKb  tgbotapi.ReplyKeyboardMarkup
@@ -41,6 +45,7 @@ func New(api *tgbotapi.BotAPI, cfg *config.Config, hist *history.Manager) *Bot {
 		cfg:          cfg,
 		history:      hist,
 		liveSessions: make(map[int64]*liveSession),
+		netSamples:   make(map[string]netSample),
 	}
 	b.initKeyboards()
 	return b
@@ -63,10 +68,9 @@ func (b *Bot) initKeyboards() {
 	b.historyKb = tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
 			tgbotapi.NewKeyboardButton("🕐 24ч"),
-			tgbotapi.NewKeyboardButton("🕑 48ч"),
+			tgbotapi.NewKeyboardButton("📅 7д"),
 		),
 		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("📅 7д"),
 			tgbotapi.NewKeyboardButton("📅 30д"),
 		),
 		tgbotapi.NewKeyboardButtonRow(tgbotapi.NewKeyboardButton("◀️ НАЗАД")),
@@ -139,95 +143,6 @@ func (b *Bot) stopLiveSession(chatID int64, deleteMsg bool) {
 	}
 }
 
-func (b *Bot) getStatusColor(percent float64) string {
-	if percent >= 80 {
-		return "🔴"
-	}
-	if percent >= 50 {
-		return "🟡"
-	}
-	return "🟢"
-}
-
-func (b *Bot) getBlockBar(percent float64, blocks int) string {
-	if percent < 0 {
-		percent = 0
-	}
-	if percent > 100 {
-		percent = 100
-	}
-	filled := int(percent/100*float64(blocks) + 0.5)
-	if filled > blocks {
-		filled = blocks
-	}
-	empty := blocks - filled
-	return strings.Repeat("🟩", filled) + strings.Repeat("⬜️", empty)
-}
-
-func (b *Bot) buildRealtimeStatusText(metrics *system.Metrics) string {
-	hostname, _ := os.Hostname()
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("🖥 %s\n", hostname))
-	sb.WriteString("────────────\n\n")
-
-	cpuPct, _ := strconv.ParseFloat(metrics.CPU.Current, 64)
-	ramPct, _ := strconv.ParseFloat(metrics.Memory.Percent, 64)
-	sb.WriteString(fmt.Sprintf("CPU  %s %.0f%%\n", b.getStatusColor(cpuPct), cpuPct))
-	sb.WriteString(b.getBlockBar(cpuPct, 10) + "\n\n")
-
-	sb.WriteString(fmt.Sprintf("RAM  %s %.0f%%\n", b.getStatusColor(ramPct), ramPct))
-	sb.WriteString(b.getBlockBar(ramPct, 10) + "\n")
-	sb.WriteString(fmt.Sprintf("%sGB / %sGB\n\n", metrics.Memory.Used, metrics.Memory.Total))
-
-	if metrics.Disk != nil {
-		diskPct, _ := strconv.Atoi(metrics.Disk.Percent)
-		sb.WriteString(fmt.Sprintf("DISK %s %d%%\n", b.getStatusColor(float64(diskPct)), diskPct))
-		sb.WriteString(b.getBlockBar(float64(diskPct), 10) + "\n")
-		sb.WriteString(fmt.Sprintf("%s / %s\n\n", metrics.Disk.Used, metrics.Disk.Total))
-	}
-
-	tempStr := "N/A"
-	if metrics.Temperature.CPU != nil {
-		tempStr = fmt.Sprintf("%.0f°C", *metrics.Temperature.CPU)
-	}
-	sb.WriteString(fmt.Sprintf("🌡️ %s   ⏱️ %s\n", tempStr, metrics.Uptime))
-	if metrics.Network != nil {
-		sb.WriteString(fmt.Sprintf("↓%s ↑%s", system.FormatBytes(metrics.Network.RxBytes), system.FormatBytes(metrics.Network.TxBytes)))
-	}
-	sb.WriteString("\n\n")
-
-	// Cluster section
-	sb.WriteString("*🤖 КЛАСТЕР*\n")
-	haproxyEmoji := "🔴"
-	if system.CheckHAProxy() == "running" {
-		haproxyEmoji = "🟢"
-	}
-	sb.WriteString(fmt.Sprintf("   %s HAProxy: статус\n", haproxyEmoji))
-
-	backendStatus := services.GetBackendStatus()
-	type beLine struct {
-		unit string
-		port int
-		name string
-	}
-	backends := []beLine{
-		{unit: "backend-1", port: 3001, name: "Backend-1"},
-		{unit: "backend-2", port: 3002, name: "Backend-2"},
-		{unit: "backend-3", port: 3003, name: "Backend-3"},
-	}
-	for _, be := range backends {
-		st := strings.TrimSpace(backendStatus[be.unit])
-		emoji := "🔴"
-		if st == "active" {
-			emoji = "🟢"
-		} else if st == "" || st == "unknown" {
-			emoji = "🔴"
-		}
-		sb.WriteString(fmt.Sprintf("   %s %s: порт %d\n", emoji, be.name, be.port))
-	}
-	return sb.String()
-}
-
 func (b *Bot) handleMainMenu(chatID int64, msg *tgbotapi.Message) {
 	text := "🖥 *Мониторинг сервера*\n\nВыберите раздел:"
 	msgOut := tgbotapi.NewMessage(chatID, text)
@@ -239,22 +154,20 @@ func (b *Bot) handleMainMenu(chatID int64, msg *tgbotapi.Message) {
 func (b *Bot) handleStatus(chatID int64) {
 	b.stopLiveSession(chatID, true)
 
-	metrics, _ := system.GetAllMetrics()
+	metrics, err := system.GetAllMetrics()
+	if err != nil {
+		b.send(chatID, "❌ Не удалось получить метрики")
+		return
+	}
 	text := b.buildRealtimeStatusText(metrics)
 
 	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ParseMode = "Markdown"
-	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
-		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonURL("📊 HAProxy Stats", "http://95.165.29.213:8404/stats"),
-		),
-	)
+	msg.ReplyMarkup = b.statusKb
+
 	sent, _ := b.api.Send(msg)
 
-	b.sendWithKeyboard(chatID, "Для выхода из live‑режима нажмите кнопку ◀️ НАЗАД.", b.statusKb)
-
 	done := make(chan struct{})
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(2 * time.Second)
 	b.mu.Lock()
 	b.liveSessions[chatID] = &liveSession{ticker: ticker, done: done, messageID: sent.MessageID, lastText: text}
 	b.mu.Unlock()
@@ -278,12 +191,7 @@ func (b *Bot) handleStatus(chatID int64) {
 					continue // пропускаем API вызов если текст не изменился
 				}
 				edit := tgbotapi.NewEditMessageText(chatID, sent.MessageID, t)
-				edit.ParseMode = "Markdown"
-				edit.ReplyMarkup = &tgbotapi.InlineKeyboardMarkup{InlineKeyboard: [][]tgbotapi.InlineKeyboardButton{
-					tgbotapi.NewInlineKeyboardRow(
-						tgbotapi.NewInlineKeyboardButtonURL("📊 HAProxy Stats", "http://95.165.29.213:8404/stats"),
-					),
-				}}
+
 				_, err = b.api.Send(edit)
 				if err != nil {
 					if strings.Contains(err.Error(), "message is not modified") {
@@ -370,6 +278,11 @@ func (b *Bot) handleCallback(query *tgbotapi.CallbackQuery) {
 	data := query.Data
 	chatID := query.Message.Chat.ID
 	msgID := query.Message.MessageID
+
+	if strings.HasPrefix(data, "metric:") {
+		b.handleAlertMetricCallback(query)
+		return
+	}
 
 	switch data {
 	case "back_main":
@@ -484,54 +397,7 @@ func (b *Bot) handleServices(chatID int64, editMsgID int) {
 	sb.WriteString("🧰 *СЛУЖБЫ*\n\n🟢 active\n🟡 activating\n🔴 failed\n⚫ stopped\n\n")
 	rows := [][]tgbotapi.InlineKeyboardButton{}
 
-	backendStatus := services.GetBackendStatus()
-	appendBackendRows := func() {
-		type backendLine struct {
-			unit  string
-			port  int
-			index int
-		}
-		lines := []backendLine{
-			{unit: "backend-1", port: 3001, index: 1},
-			{unit: "backend-2", port: 3002, index: 2},
-			{unit: "backend-3", port: 3003, index: 3},
-		}
-		for _, ln := range lines {
-			st := strings.TrimSpace(backendStatus[ln.unit])
-			emoji := "⚫"
-			switch st {
-			case "active":
-				emoji = "🟢"
-			case "inactive", "failed":
-				emoji = "🔴"
-			default:
-				emoji = "⚫"
-			}
-			label := fmt.Sprintf("%s Backend-%d (порт %d)", emoji, ln.index, ln.port)
-			sb.WriteString(label + "\n")
-			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData(label, "backend_status"),
-			))
-		}
-	}
-	isBackendService := func(s config.Service) bool {
-		sysName := strings.ToLower(strings.TrimSpace(s.SystemName))
-		if sysName == "backend" {
-			return true
-		}
-		name := strings.ToLower(s.Name)
-		return strings.Contains(name, "backend") && sysName == "backend"
-	}
-
-	insertedBackends := false
 	for i, s := range b.cfg.Services {
-		if isBackendService(s) {
-			if !insertedBackends {
-				appendBackendRows()
-				insertedBackends = true
-			}
-			continue
-		}
 
 		st := statuses[i]
 		emoji := "⚪"
@@ -550,17 +416,6 @@ func (b *Bot) handleServices(chatID int64, editMsgID int) {
 			tgbotapi.NewInlineKeyboardButtonData(emoji+" "+s.Name, "service_"+s.SystemName),
 		))
 	}
-	if !insertedBackends {
-		appendBackendRows()
-	}
-
-	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("🔄 Обновить все", "services_refresh"),
-		tgbotapi.NewInlineKeyboardButtonData("◀️ Назад", "back_main"),
-	))
-	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("🔄 Restart All Backends", "backend_restartall"),
-	))
 
 	if editMsgID > 0 {
 		edit := tgbotapi.NewEditMessageText(chatID, editMsgID, sb.String())
@@ -702,37 +557,69 @@ func (b *Bot) handleHistPeriod(chatID int64, hours int) {
 
 	if cpuStats != nil {
 		avg, _ := strconv.ParseFloat(cpuStats.Avg, 64)
+		maxAt := ""
+		if cpuStats.MaxAt != "" {
+			maxAt = " (" + cpuStats.MaxAt + ")"
+		}
+		minAt := ""
+		if cpuStats.MinAt != "" {
+			minAt = " (" + cpuStats.MinAt + ")"
+		}
 		sb.WriteString("⚡ *CPU*\n")
 		sb.WriteString(system.GetLoadBar(avg, 20) + "\n")
 		sb.WriteString(fmt.Sprintf("   📊 Среднее: *%s%%*\n", cpuStats.Avg))
-		sb.WriteString(fmt.Sprintf("   📈 Максимум: *%s%%*\n", cpuStats.Max))
-		sb.WriteString(fmt.Sprintf("   📉 Минимум: *%s%%*\n", cpuStats.Min))
+		sb.WriteString(fmt.Sprintf("   📈 Максимум: *%s%%*%s\n", cpuStats.Max, maxAt))
+		sb.WriteString(fmt.Sprintf("   📉 Минимум: *%s%%*%s\n", cpuStats.Min, minAt))
 		sb.WriteString(fmt.Sprintf("   📐 Точек данных: %d\n\n", cpuStats.Points))
 	}
 	if memStats != nil {
 		avg, _ := strconv.ParseFloat(memStats.Avg, 64)
+		maxAt := ""
+		if memStats.MaxAt != "" {
+			maxAt = " (" + memStats.MaxAt + ")"
+		}
+		minAt := ""
+		if memStats.MinAt != "" {
+			minAt = " (" + memStats.MinAt + ")"
+		}
 		sb.WriteString("🧠 *RAM*\n")
 		sb.WriteString(system.GetLoadBar(avg, 20) + "\n")
 		sb.WriteString(fmt.Sprintf("   📊 Среднее: *%s%%*\n", memStats.Avg))
-		sb.WriteString(fmt.Sprintf("   📈 Максимум: *%s%%*\n", memStats.Max))
-		sb.WriteString(fmt.Sprintf("   📉 Минимум: *%s%%*\n", memStats.Min))
+		sb.WriteString(fmt.Sprintf("   📈 Максимум: *%s%%*%s\n", memStats.Max, maxAt))
+		sb.WriteString(fmt.Sprintf("   📉 Минимум: *%s%%*%s\n", memStats.Min, minAt))
 		sb.WriteString(fmt.Sprintf("   📐 Точек данных: %d\n\n", memStats.Points))
 	}
 	if diskStats != nil {
 		avg, _ := strconv.ParseFloat(diskStats.Avg, 64)
+		maxAt := ""
+		if diskStats.MaxAt != "" {
+			maxAt = " (" + diskStats.MaxAt + ")"
+		}
+		minAt := ""
+		if diskStats.MinAt != "" {
+			minAt = " (" + diskStats.MinAt + ")"
+		}
 		sb.WriteString("💽 *DISK*\n")
 		sb.WriteString(system.GetLoadBar(avg, 20) + "\n")
 		sb.WriteString(fmt.Sprintf("   📊 Среднее: *%s%%*\n", diskStats.Avg))
-		sb.WriteString(fmt.Sprintf("   📈 Максимум: *%s%%*\n", diskStats.Max))
-		sb.WriteString(fmt.Sprintf("   📉 Минимум: *%s%%*\n", diskStats.Min))
+		sb.WriteString(fmt.Sprintf("   📈 Максимум: *%s%%*%s\n", diskStats.Max, maxAt))
+		sb.WriteString(fmt.Sprintf("   📉 Минимум: *%s%%*%s\n", diskStats.Min, minAt))
 		sb.WriteString(fmt.Sprintf("   📐 Точек данных: %d\n\n", diskStats.Points))
 	}
 	if tempStats != nil {
 		maxTemp, _ := strconv.ParseFloat(tempStats.Max, 64)
+		maxAt := ""
+		if tempStats.MaxAt != "" {
+			maxAt = " (" + tempStats.MaxAt + ")"
+		}
+		minAt := ""
+		if tempStats.MinAt != "" {
+			minAt = " (" + tempStats.MinAt + ")"
+		}
 		sb.WriteString(system.GetTempEmoji(maxTemp) + " *TEMPERATURE*\n")
 		sb.WriteString(fmt.Sprintf("   📊 Среднее: *%s°C*\n", tempStats.Avg))
-		sb.WriteString(fmt.Sprintf("   📈 Максимум: *%s°C*\n", tempStats.Max))
-		sb.WriteString(fmt.Sprintf("   📉 Минимум: *%s°C*\n", tempStats.Min))
+		sb.WriteString(fmt.Sprintf("   📈 Максимум: *%s°C*%s\n", tempStats.Max, maxAt))
+		sb.WriteString(fmt.Sprintf("   📉 Минимум: *%s°C*%s\n", tempStats.Min, minAt))
 		sb.WriteString(fmt.Sprintf("   📐 Точек данных: %d\n\n", tempStats.Points))
 	}
 	if cpuStats == nil && memStats == nil && diskStats == nil && tempStats == nil {

@@ -2,10 +2,10 @@
   "telegram_token": "YOUR_BOT_TOKEN",
   "admin_id": 123456789,
   "thresholds": {
-    "cpu": 80,
-    "ram": 85,
+    "cpu": 60,
+    "ram": 70,
     "disk": 90,
-    "temp_cpu": 80,
+    "temp_cpu": 60,
     "temp_gpu": 80,
     "temp_ssd": 65,
     "network_speed": 104857600
@@ -13,12 +13,28 @@
   "intervals": {
     "check": 60000,
     "history": 300000,
-    "alert_cooldown": 1800000,
+    "alert_cooldown": 300000,
     "cleanup": 86400000
   },
   "services": [
     {"name": "📁 File Browser", "system_name": "filebrowser"},
     {"name": "🌐 Nginx", "system_name": "nginx"},
     {"name": "🐳 Docker", "system_name": "docker"}
+  ],
+  "checks": [
+    {
+      "name": "Nginx HTTP",
+      "type": "http",
+      "target": "http://127.0.0.1/",
+      "timeout_ms": 2000,
+      "restart_service": "nginx"
+    },
+    {
+      "name": "PostgreSQL TCP",
+      "type": "tcp",
+      "target": "127.0.0.1:5432",
+      "timeout_ms": 2000,
+      "restart_service": "postgresql"
+    }
   ]
 }
