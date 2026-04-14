@@ -1,0 +1,12 @@
+{
+  "telegram_token": "8661548467:AAFaKdXu7NjG27nxAM-iz_0I23xD6Q2B3dg",
+  "admin_id": 964264865,
+  "services": [
+    { "name": " 📁 File Browser", "system_name": "filebrowser" },
+    { "name": " 📦 JSON Server", "system_name": "json-server" },
+    { "name": " 🌐 Nginx", "system_name": "nginx" },
+    { "name": " 🐳 Docker", "system_name": "docker" },
+    { "name": " 🗃️ PostgreSQL", "system_name": "postgresql" },
+    { "name": " 🌐 haproxy", "system_name": "haproxy" }
+  ]
+}
