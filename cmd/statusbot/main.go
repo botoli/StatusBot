@@ -5,12 +5,13 @@ import (
 	"os"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"statusbot/internal/alerts"
 	"statusbot/internal/bot"
 	"statusbot/internal/config"
 	"statusbot/internal/history"
 	"statusbot/internal/system"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 func main() {
@@ -50,6 +51,7 @@ func main() {
 	go runHistoryCleanup(histMgr, cfg)
 
 	telegramBot := bot.New(api, cfg, histMgr)
+	telegramBot.SetAlertController(alertMgr)
 	telegramBot.Run()
 }
 
